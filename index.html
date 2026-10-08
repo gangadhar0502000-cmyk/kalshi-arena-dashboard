@@ -7,8 +7,10 @@
 <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
-<div class="banner">PAPER TRADING ONLY — simulated fills, no path that sends orders</div>
-<div class="stale" id="stale">Snapshot is stale. The 24/7 publisher has not updated this gist in over two minutes.</div>
+<div class="topbars">
+  <div class="banner">PAPER TRADING ONLY — simulated fills, no path that sends orders</div>
+  <div class="stale" id="stale">Snapshot is stale. The 24/7 publisher has not updated this gist in over two minutes. The last real numbers stay on screen.</div>
+</div>
 <main>
   <header>
     <h1>Kalshi 15-minute paper arena</h1>
@@ -16,10 +18,23 @@
     <p class="sub" id="freshness">last updated —</p>
   </header>
   <section class="grid" id="health"></section>
+  <section class="panel arena-panel" id="groups">
+    <h2>Groups</h2>
+    <p class="sub" id="arena-readout">Loading groups from the gist.</p>
+    <p class="sub" id="arena-size"></p>
+    <p class="sub" id="arena-notes"></p>
+    <div class="arena-stage" id="arena-stage">
+      <div class="cluster-grid" id="cluster-grid"></div>
+      <div class="note-layer" id="note-layer" aria-hidden="true"></div>
+    </div>
+    <p class="sub" id="arena-fresh"></p>
+    <p class="sub">A crown marks that group's leader. An amber dot on a robot means that agent has simulated fills in this snapshot. Dim dots are agents in the group who are not named in this snapshot. Robots only bob in place. That motion is not a trade or a profit.</p>
+    <ul class="note-list" id="note-list"></ul>
+  </section>
   <section class="two">
     <div class="panel">
       <h2>Population dollars</h2>
-      <p class="sub">Solid lines are the selection windows. Dashed lines are the held-out window, which was not used to pick parents.</p>
+      <p class="sub">Solid lines are the selection windows (training). Dashed lines are the held-out window (unseen, not used to pick parents).</p>
       <canvas id="chart" width="800" height="240"></canvas>
       <p class="sub" id="spread"></p>
     </div>
