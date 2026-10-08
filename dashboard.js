@@ -183,6 +183,7 @@ function render(bundle) {
   const health = bundle.health || {};
   const generations = (bundle.generations && bundle.generations.generations) || [];
   const agents = (bundle.leaderboard && bundle.leaderboard.agents) || [];
+  const memoryNotes = (bundle.leaderboard && bundle.leaderboard.memory) || [];
   const trades = (bundle.trades && bundle.trades.trades) || [];
   const llm = bundle.llm || {};
   latestAgents = agents;
@@ -220,17 +221,25 @@ function render(bundle) {
     <p>Latency attribution (touch move after the decision; negative if the price improved) <span class="metric">${num(summary.latency_cost_is, 2)}</span></p>
     <p>Capital lockup, dollar-seconds <span class="metric">${num(summary.lockup_is, 0)}</span></p>
     <p class="sub">Net PnL already includes fees and the price actually paid. These lines are not charged a second time.</p>` : "<p class='sub'>Waiting for a generation.</p>";
+  const memoryNode = document.getElementById("memory");
+  if (memoryNode) {
+    memoryNode.textContent = !memoryNotes.length
+      ? "No shared notes yet."
+      : memoryNotes.map(note => `${note.kind || ""} ${note.pattern || ""} (${note.cost || ""}): ${note.text || ""}`).join(" · ");
+  }
   const body = document.querySelector("#board tbody");
   body.innerHTML = "";
   if (!agents.length) {
-    body.innerHTML = "<tr><td colspan='12'>No agents in the latest generation.</td></tr>";
+    body.innerHTML = "<tr><td colspan='14'>No agents in the latest generation.</td></tr>";
   }
   agents.forEach(agent => {
     const ism = agent.is_metrics || {};
+    const group = ism.group_id != null ? ism.group_id : (agent.group_id != null ? agent.group_id : "—");
+    const leader = ism.leader || agent.leader ? "yes" : "";
     const tr = document.createElement("tr");
     tr.className = "click";
     tr.dataset.id = agent.agent_id;
-    tr.innerHTML = `<td>${escapeHtml(agent.agent_id)}</td><td>${escapeHtml(agent.origin)}</td><td>${scoreText(agent.is_score)}</td><td>${scoreText(agent.oos_score)}</td><td>${num(ism.net_pnl, 2)}</td><td>${num(ism.fees, 2)}</td><td>${num(ism.spread_slippage, 2)}</td><td>${num(ism.latency_cost, 2)}</td><td>${ism.n_round_trips ?? "—"}</td><td>${num(ism.win_rate, 2)}</td><td>${num(ism.max_drawdown, 2)}</td><td>${escapeHtml(statusLabel(agent, ism))}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(agent.agent_id)}</td><td>${escapeHtml(group)}</td><td>${escapeHtml(leader)}</td><td>${escapeHtml(agent.origin)}</td><td>${scoreText(agent.is_score)}</td><td>${scoreText(agent.oos_score)}</td><td>${num(ism.net_pnl, 2)}</td><td>${num(ism.fees, 2)}</td><td>${num(ism.spread_slippage, 2)}</td><td>${num(ism.latency_cost, 2)}</td><td>${ism.n_round_trips ?? "—"}</td><td>${num(ism.win_rate, 2)}</td><td>${num(ism.max_drawdown, 2)}</td><td>${escapeHtml(statusLabel(agent, ism))}</td>`;
     tr.onclick = () => showAgent(agent);
     body.appendChild(tr);
   });
