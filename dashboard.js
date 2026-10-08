@@ -14,6 +14,20 @@ function num(value, digits) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
   return Number(value).toFixed(digits === undefined ? 3 : digits);
 }
+function scoreText(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= -1000) return "—";
+  return number.toFixed(4);
+}
+function statusLabel(agent, metrics) {
+  const label = (agent && agent.status) || (metrics && metrics.status) || "";
+  if (label) return label;
+  if (metrics && metrics.eligible) return "eligible";
+  const windows = metrics && Array.isArray(metrics.window_returns) ? metrics.window_returns.length : 0;
+  const trades = metrics && metrics.n_round_trips != null ? metrics.n_round_trips : 0;
+  return `warming up (${windows}/4 windows, ${trades}/30 trades)`;
+}
 function card(label, value) {
   return `<div class="panel"><div class="label">${escapeHtml(label)}</div><div class="metric">${value}</div></div>`;
 }
@@ -134,10 +148,13 @@ function drawEquity(points) {
 
 function showAgent(agent) {
   selectedId = agent.agent_id;
-  document.getElementById("agent-title").textContent = agent.agent_id + " · " + (agent.origin || "");
+  const ism = agent.is_metrics || {};
+  document.getElementById("agent-title").textContent =
+    agent.agent_id + " · " + (agent.origin || "") + " · " + statusLabel(agent, ism);
   document.getElementById("genome").textContent =
+    statusLabel(agent, ism) + "\n\n" +
     JSON.stringify(agent.genome || {}, null, 2) +
-    "\n\nselection metrics\n" + JSON.stringify(agent.is_metrics || {}, null, 2) +
+    "\n\nselection metrics\n" + JSON.stringify(ism, null, 2) +
     "\n\nholdout metrics\n" + JSON.stringify(agent.oos_metrics || {}, null, 2);
   drawEquity(agent.equity || []);
   renderTrades(latestTrades.filter(trade => trade.agent_id === agent.agent_id));
@@ -194,13 +211,13 @@ function render(bundle) {
   document.getElementById("spread").textContent = !last
     ? "No generation yet."
     : (!spread || !spread.n)
-      ? "No agent is eligible yet. Origins: " + JSON.stringify(origins)
+      ? "No agent is eligible yet. Scores are the provisional warm-up return. Origins: " + JSON.stringify(origins)
       : `Eligible fitness n=${spread.n} min ${num(spread.min)} median ${num(spread.median)} max ${num(spread.max)}. Origins ${JSON.stringify(origins)}`;
   const summary = last && last.summary;
   document.getElementById("costs").innerHTML = summary ? `
     <p>Fees (sum of agents, selection windows) <span class="metric">${num(summary.fees_is, 2)}</span></p>
     <p>Book slippage vs touch at fill <span class="metric">${num(summary.slippage_is, 2)}</span></p>
-    <p>Latency attribution (fill minus the touch the agent saw) <span class="metric">${num(summary.latency_cost_is, 2)}</span></p>
+    <p>Latency attribution (touch move after the decision; negative if the price improved) <span class="metric">${num(summary.latency_cost_is, 2)}</span></p>
     <p>Capital lockup, dollar-seconds <span class="metric">${num(summary.lockup_is, 0)}</span></p>
     <p class="sub">Net PnL already includes fees and the price actually paid. These lines are not charged a second time.</p>` : "<p class='sub'>Waiting for a generation.</p>";
   const body = document.querySelector("#board tbody");
@@ -213,7 +230,7 @@ function render(bundle) {
     const tr = document.createElement("tr");
     tr.className = "click";
     tr.dataset.id = agent.agent_id;
-    tr.innerHTML = `<td>${escapeHtml(agent.agent_id)}</td><td>${escapeHtml(agent.origin)}</td><td>${num(agent.is_score)}</td><td>${num(agent.oos_score)}</td><td>${num(ism.net_pnl, 2)}</td><td>${num(ism.fees, 2)}</td><td>${num(ism.spread_slippage, 2)}</td><td>${num(ism.latency_cost, 2)}</td><td>${ism.n_round_trips ?? "—"}</td><td>${num(ism.win_rate, 2)}</td><td>${num(ism.max_drawdown, 2)}</td><td>${ism.eligible ? "yes" : "no"}</td>`;
+    tr.innerHTML = `<td>${escapeHtml(agent.agent_id)}</td><td>${escapeHtml(agent.origin)}</td><td>${scoreText(agent.is_score)}</td><td>${scoreText(agent.oos_score)}</td><td>${num(ism.net_pnl, 2)}</td><td>${num(ism.fees, 2)}</td><td>${num(ism.spread_slippage, 2)}</td><td>${num(ism.latency_cost, 2)}</td><td>${ism.n_round_trips ?? "—"}</td><td>${num(ism.win_rate, 2)}</td><td>${num(ism.max_drawdown, 2)}</td><td>${escapeHtml(statusLabel(agent, ism))}</td>`;
     tr.onclick = () => showAgent(agent);
     body.appendChild(tr);
   });
