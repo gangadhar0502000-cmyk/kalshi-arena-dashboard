@@ -1,3 +1,74 @@
-<!doctype html><html><head><meta charset="utf-8"><title>Kalshi Arena Dashboard</title></head>
-<body style="font-family:sans-serif;background:#111;color:#eee;padding:2em">
-<h1>Kalshi Arena (paper trading)</h1><p>Dashboard is being deployed. Check back in a few minutes.</p></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kalshi paper arena</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<div class="banner">PAPER TRADING ONLY — simulated fills, no path that sends orders</div>
+<div class="stale" id="stale">Snapshot is stale. The 24/7 publisher has not updated this gist in over two minutes.</div>
+<main>
+  <header>
+    <h1>Kalshi 15-minute paper arena</h1>
+    <p class="sub" id="message">loading the public gist snapshot</p>
+    <p class="sub" id="freshness">last updated —</p>
+  </header>
+  <section class="grid" id="health"></section>
+  <section class="two">
+    <div class="panel">
+      <h2>Population dollars</h2>
+      <p class="sub">Solid lines are the selection windows. Dashed lines are the held-out window, which was not used to pick parents.</p>
+      <canvas id="chart" width="800" height="240"></canvas>
+      <p class="sub" id="spread"></p>
+    </div>
+    <div class="panel">
+      <h2>Costs this generation</h2>
+      <div id="costs"></div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Live markets</h2>
+    <div id="markets" class="grid"><p class="sub">No open market snapshot yet.</p></div>
+  </section>
+  <section class="panel">
+    <h2>Leaderboard</h2>
+    <div class="scroll">
+      <table id="board"><thead><tr>
+        <th>Agent</th><th>Origin</th><th>IS score</th><th>OOS score</th><th>Net</th><th>Fees</th><th>Slippage</th><th>Latency cost</th><th>Trades</th><th>Win</th><th>Drawdown</th><th>Eligible</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+  <section class="two">
+    <div class="panel">
+      <h2 id="agent-title">Agent</h2>
+      <canvas id="equity" width="700" height="200"></canvas>
+      <pre id="genome">Select a row. The genome, window metrics, and equity path are in the snapshot.</pre>
+    </div>
+    <div class="panel">
+      <h2>Simulated fills</h2>
+      <div class="scroll">
+        <table id="trades"><thead><tr>
+          <th>Time</th><th>Agent</th><th>Market</th><th>Side</th><th>Liq</th><th>Qty</th><th>Fill</th><th>Fee</th><th>Latency</th><th>Market result</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Generation history</h2>
+    <div class="scroll">
+      <table id="history"><thead><tr>
+        <th>Id</th><th>When</th><th>Selection windows</th><th>Holdout</th><th>Eligible</th><th>Median selection $</th><th>Median holdout $</th><th>Best agent's holdout $</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Evolution and LLM</h2>
+    <div id="llm" class="sub">No review yet.</div>
+  </section>
+</main>
+<script src="config.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>
