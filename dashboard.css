@@ -175,7 +175,7 @@ pre { white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; color: var(
 .hud-left { grid-area: left; }
 .hud-right { grid-area: right; }
 .station-stage { grid-area: stage; position: relative; min-width: 0; }
-.station-rooms { grid-area: rooms; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.station-rooms { grid-area: rooms; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .hud { display: grid; gap: 8px; align-content: start; }
 .hud-card, .room-card {
   border: 1px solid rgba(110, 230, 214, 0.28);

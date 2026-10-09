@@ -129,6 +129,225 @@ function newestIdea(llm) {
   const call = sorted[0];
   return { text: ideaFromAccepted(call.accepted), status: present(call.status) ? String(call.status) : "" };
 }
+function looseObject(raw) {
+  if (raw && typeof raw === "object") return raw;
+  if (!present(raw)) return null;
+  try { return JSON.parse(String(raw)); } catch (err) { return null; }
+}
+function boundsFromText(raw) {
+  const parsed = looseObject(raw);
+  if (parsed && parsed.bounds && typeof parsed.bounds === "object" && !Array.isArray(parsed.bounds)) return parsed.bounds;
+  const match = /"bounds"\s*:\s*\{([^}]*)\}/.exec(String(raw || ""));
+  if (!match) return null;
+  const bounds = {};
+  const re = /"([^"]+)"\s*:\s*\[([^\]]*)\]/g;
+  let found = re.exec(match[1]);
+  while (found) {
+    bounds[found[1]] = "[" + found[2].trim() + "]";
+    found = re.exec(match[1]);
+  }
+  return bounds;
+}
+function ideasFromText(raw) {
+  const parsed = looseObject(raw);
+  const list = parsed && (parsed.signal_ideas || parsed.idea_directions || parsed.directions || parsed.suggestions);
+  if (Array.isArray(list)) {
+    return list.map(item => ({
+      name: item && (item.name || item.id) || "",
+      direction: item && (item.direction || item.action) || "",
+      note: item && (item.note || item.text || item.summary) || ""
+    }));
+  }
+  const ideas = [];
+  const re = /"name"\s*:\s*"([^"]+)"\s*,\s*"direction"\s*:\s*"([^"]+)"(?:\s*,\s*"note"\s*:\s*"([^"]*))?/g;
+  const text = String(raw || "");
+  let found = re.exec(text);
+  while (found) {
+    ideas.push({ name: found[1], direction: found[2], note: found[3] || "" });
+    found = re.exec(text);
+  }
+  return ideas;
+}
+function rejectList(raw) {
+  if (Array.isArray(raw)) return raw.map(item => String(item)).filter(Boolean);
+  if (!present(raw)) return [];
+  const parsed = looseObject(raw);
+  if (Array.isArray(parsed)) return parsed.map(item => String(item)).filter(Boolean);
+  const text = String(raw).trim();
+  if (!text || text === "[]") return [];
+  return [text];
+}
+function reviewCalls(llm) {
+  const calls = (llm && Array.isArray(llm.calls)) ? llm.calls.slice() : [];
+  const tagged = calls.filter(call => present(call.kind) || present(call.role) || present(call.type));
+  if (!tagged.length) return { calls: calls, source: "llm.calls" };
+  const reviews = calls.filter(call => /review|supervisor/i.test(String(call.kind || call.role || call.type || "")));
+  if (reviews.length) return { calls: reviews, source: "llm.calls review" };
+  return { calls: calls, source: "llm.calls" };
+}
+function newestCall(calls) {
+  if (!calls.length) return null;
+  return calls.slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))[0];
+}
+function flightStatus(call) {
+  if (!call) return null;
+  if (call.in_flight === true || call.reviewing === true) return true;
+  if (call.in_flight === false || call.reviewing === false) return false;
+  const status = String(call.status || "").toLowerCase();
+  if (!status) return null;
+  if (/^(running|in_progress|in-progress|pending|started|queued|working)$/.test(status)) return true;
+  return false;
+}
+function appliedBounds(call, bounds) {
+  if (!call) return null;
+  if (typeof call.applied === "boolean") return call.applied;
+  if (typeof call.applied_changes === "boolean") return call.applied_changes;
+  const status = String(call.status || call.decision || "").toLowerCase();
+  if (!status) return null;
+  const count = bounds && typeof bounds === "object" ? Object.keys(bounds).length : 0;
+  if (status === "accepted") return count > 0;
+  if (/reject|fail|error|denied/.test(status)) return false;
+  return null;
+}
+function writerPause(health, scoreboard, llm) {
+  const bags = [
+    ["health", health],
+    ["health.llm", health && health.llm],
+    ["ai_scoreboard", scoreboard],
+    ["llm", llm]
+  ];
+  const keys = ["writer_paused", "memory_guard", "review_hold", "writer_hold", "paused"];
+  for (let i = 0; i < bags.length; i++) {
+    const bag = bags[i][1];
+    if (!bag || typeof bag !== "object") continue;
+    for (let k = 0; k < keys.length; k++) {
+      const value = bag[keys[k]];
+      if (value === true) return "yes · " + bags[i][0] + "." + keys[k];
+      if (value === false) return "no · " + bags[i][0] + "." + keys[k];
+      if (present(value) && typeof value !== "object") return String(value) + " · " + bags[i][0] + "." + keys[k];
+    }
+  }
+  return null;
+}
+function promptVariant(scoreboard, health, call) {
+  if (scoreboard && present(scoreboard.prompt_id)) return { id: String(scoreboard.prompt_id), key: "ai_scoreboard.prompt_id" };
+  if (health && present(health.prompt_id)) return { id: String(health.prompt_id), key: "health.prompt_id" };
+  if (call && present(call.prompt_id)) return { id: String(call.prompt_id), key: "llm.calls.prompt_id" };
+  if (call && present(call.prompt_variant)) return { id: String(call.prompt_variant), key: "llm.calls.prompt_variant" };
+  return null;
+}
+function readReview(health, llm, scoreboard) {
+  let call = null;
+  let source = "llm.calls";
+  const pocket = health && health.llm;
+  if (pocket && typeof pocket === "object" && !Array.isArray(pocket)) {
+    if (pocket.review && typeof pocket.review === "object") {
+      call = pocket.review;
+      source = "health.llm.review";
+    } else if (present(pocket.created_at) || present(pocket.status) || present(pocket.decision) || present(pocket.reasoning)) {
+      call = pocket;
+      source = "health.llm";
+    }
+  }
+  if (!call) {
+    const pool = reviewCalls(llm);
+    call = newestCall(pool.calls);
+    source = pool.source;
+  }
+  if (!call) {
+    return {
+      source: "—",
+      time: null,
+      decision: null,
+      reasoning: null,
+      bounds: null,
+      ideas: [],
+      rejected: [],
+      applied: null,
+      inFlight: null,
+      paused: writerPause(health, scoreboard, llm),
+      prompt: promptVariant(scoreboard, health, null),
+      model: null,
+      provider: null
+    };
+  }
+  const bounds = boundsFromText(call.accepted != null ? call.accepted : call);
+  const ideas = ideasFromText(call.accepted != null ? call.accepted : call);
+  const reasoning = ideaFromAccepted(call.accepted != null ? call.accepted : (call.reasoning || call.summary || ""));
+  const decision = present(call.decision) ? String(call.decision) : (present(call.status) ? String(call.status) : null);
+  return {
+    source: source,
+    time: present(call.created_at) ? String(call.created_at) : (present(call.time) ? String(call.time) : null),
+    decision: decision,
+    reasoning: reasoning || null,
+    bounds: bounds,
+    ideas: ideas,
+    rejected: rejectList(call.reject_reasons),
+    applied: appliedBounds(call, bounds),
+    inFlight: flightStatus(call),
+    paused: writerPause(health, scoreboard, llm),
+    prompt: promptVariant(scoreboard, health, call),
+    model: present(call.model) ? String(call.model) : null,
+    provider: present(call.provider) ? String(call.provider) : null
+  };
+}
+function recordGroup(item) {
+  if (!item || typeof item !== "object") return null;
+  const keys = ["group_id", "group", "source_group"];
+  for (let i = 0; i < keys.length; i++) {
+    if (present(item[keys[i]]) || item[keys[i]] === 0) return String(item[keys[i]]);
+  }
+  return null;
+}
+function codeSeatList(agents, archive, scoreboard) {
+  const fromBoard = [];
+  (agents || []).forEach(agent => {
+    const strategy = readCodeStrategy(agent);
+    if (!strategy) return;
+    fromBoard.push({
+      id: agent.agent_id || "code",
+      name: agent.agent_id || "—",
+      source: "leaderboard",
+      groupId: present(agent.group_id) || agent.group_id === 0 ? String(agent.group_id) : null,
+      description: strategy.description,
+      windows: null,
+      unseen: agent.oos_net
+    });
+  });
+  if (fromBoard.length) return { source: "leaderboard.code", seats: fromBoard };
+  const top = archive && Array.isArray(archive.top) ? archive.top : null;
+  if (top && top.length) {
+    return {
+      source: "idea_archive.top",
+      seats: top.map((item, index) => ({
+        id: "archive-" + index,
+        name: item.name || item.hypothesis || "—",
+        source: "idea_archive",
+        groupId: recordGroup(item),
+        description: item.hypothesis || item.name || "—",
+        windows: item.windows,
+        unseen: item.unseen_net,
+        mode: item.mode || ""
+      }))
+    };
+  }
+  const nets = scoreboard && Array.isArray(scoreboard.window_nets) ? scoreboard.window_nets : null;
+  if (nets && nets.length) {
+    return {
+      source: "ai_scoreboard.window_nets",
+      seats: nets.map((item, index) => ({
+        id: "scoreboard-" + index,
+        name: item.name || "—",
+        source: "ai_scoreboard",
+        groupId: recordGroup(item),
+        description: item.name || "—",
+        windows: Array.isArray(item.nets) ? item.nets.length : null,
+        unseen: null
+      }))
+    };
+  }
+  return { source: "—", seats: [] };
+}
 function sharedNoteList(health, leaderboard) {
   if (health && Array.isArray(health.memory)) return { notes: health.memory, where: "health.memory" };
   if (leaderboard && Array.isArray(leaderboard.memory)) return { notes: leaderboard.memory, where: "leaderboard.memory" };
@@ -162,20 +381,21 @@ function stationMap() {
   const cols = [0, 5, 10, 15, 20];
   cols.forEach((c, index) => rooms.push({ id: "g" + index, kind: "team", groupId: String(index), c: c, r: 0, w: 4, h: 3 }));
   cols.forEach((c, index) => rooms.push({ id: "g" + (index + 5), kind: "team", groupId: String(index + 5), c: c, r: 5, w: 4, h: 3 }));
-  rooms.push({ id: "exchange", kind: "exchange", c: 0, r: 10, w: 8, h: 4 });
-  rooms.push({ id: "lab", kind: "lab", c: 8, r: 10, w: 8, h: 4 });
-  rooms.push({ id: "vault", kind: "vault", c: 16, r: 10, w: 8, h: 4 });
-  cols.forEach((c, index) => rooms.push({ id: "g" + (index + 10), kind: "team", groupId: String(index + 10), c: c, r: 16, w: 4, h: 3 }));
-  cols.forEach((c, index) => rooms.push({ id: "g" + (index + 15), kind: "team", groupId: String(index + 15), c: c, r: 21, w: 4, h: 3 }));
+  rooms.push({ id: "bridge", kind: "bridge", c: 8, r: 8, w: 8, h: 3 });
+  rooms.push({ id: "exchange", kind: "exchange", c: 0, r: 13, w: 8, h: 4 });
+  rooms.push({ id: "lab", kind: "lab", c: 8, r: 13, w: 8, h: 4 });
+  rooms.push({ id: "vault", kind: "vault", c: 16, r: 13, w: 8, h: 4 });
+  cols.forEach((c, index) => rooms.push({ id: "g" + (index + 10), kind: "team", groupId: String(index + 10), c: c, r: 19, w: 4, h: 3 }));
+  cols.forEach((c, index) => rooms.push({ id: "g" + (index + 15), kind: "team", groupId: String(index + 15), c: c, r: 24, w: 4, h: 3 }));
   return rooms;
 }
 function hallFor(room) {
   const tiles = [];
   const mid = room.c + Math.floor(room.w / 2);
-  if (room.r + room.h <= 10) {
+  if (room.r < 8) {
     tiles.push({ c: mid, r: room.r + room.h, ids: [room.groupId] });
     tiles.push({ c: mid, r: room.r + room.h + 1, ids: [room.groupId] });
-  } else if (room.r >= 16) {
+  } else if (room.r >= 19) {
     tiles.push({ c: mid, r: room.r - 1, ids: [room.groupId] });
     tiles.push({ c: mid, r: room.r - 2, ids: [room.groupId] });
   }
@@ -183,6 +403,9 @@ function hallFor(room) {
     tiles.push({ c: room.c + room.w, r: room.r + 1, ids: [room.groupId, String(Number(room.groupId) + 1)] });
   }
   return tiles;
+}
+function tileInsideRoom(rooms, c, r) {
+  return rooms.some(room => c >= room.c && r >= room.r && c < room.c + room.w && r < room.r + room.h);
 }
 function isoOf(c, r) {
   return {
@@ -204,6 +427,7 @@ function tileColors(kind, lit, pulse) {
       ? { floor: "#a86b22", edge: "#f0c14a" }
       : { floor: "#6e4818", edge: "#d7a24a" };
   }
+  if (kind === "bridge") return { floor: "#2a2148", edge: "#e2c56a" };
   if (kind === "lab") return { floor: "#1a3c4a", edge: "#7ef6e4" };
   if (kind === "exchange") return { floor: "#3a301c", edge: "#e2b15a" };
   if (kind === "vault") return { floor: "#243044", edge: "#8fd4ff" };
@@ -225,6 +449,7 @@ function drawTile(ctx, c, r, colors, checker) {
 function shade(hex) {
   if (hex === "#1c3144") return "#182838";
   if (hex === "#24384c") return "#1e3142";
+  if (hex === "#2a2148") return "#231c3c";
   if (hex === "#1a3c4a") return "#163440";
   if (hex === "#3a301c") return "#312816";
   if (hex === "#243044") return "#1e2838";
@@ -252,6 +477,25 @@ function drawBackWall(ctx, c, r) {
   ctx.lineTo(p.x, p.y - h);
   ctx.closePath();
   ctx.fill();
+}
+function pixelLine(ctx, x0, y0, x1, y1, color) {
+  let x = Math.round(x0);
+  let y = Math.round(y0);
+  const xEnd = Math.round(x1);
+  const yEnd = Math.round(y1);
+  const dx = Math.abs(xEnd - x);
+  const dy = Math.abs(yEnd - y);
+  const sx = x < xEnd ? 1 : -1;
+  const sy = y < yEnd ? 1 : -1;
+  let err = dx - dy;
+  ctx.fillStyle = color;
+  for (let n = 0; n < 900; n++) {
+    ctx.fillRect(x, y, 1, 1);
+    if (x === xEnd && y === yEnd) break;
+    const e2 = err * 2;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 < dx) { err += dx; y += sy; }
+  }
 }
 function drawConsole(ctx, c, r, screen) {
   const p = isoOf(c + 0.35, r + 0.35);
@@ -291,6 +535,47 @@ function drawCrew(ctx, x, y, pose, robot) {
     ctx.fillStyle = "#f0c14a";
     ctx.fillRect(x + 2, y - 6, 2, 2);
   }
+}
+function drawCaptain(ctx, x, y, pose) {
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(x - 8, y, 16, 3);
+  ctx.fillStyle = "#c8b48a";
+  ctx.fillRect(x - 5, y - 8, 4, 8);
+  ctx.fillRect(x + 1, y - 8, 4, 8);
+  if (!pose.work && pose.step) ctx.fillRect(x - 8, y - 4, 3, 3);
+  else if (!pose.work && !pose.idle) ctx.fillRect(x + 5, y - 4, 3, 3);
+  ctx.fillStyle = "#1e2a3c";
+  ctx.fillRect(x - 8, y - 20, 16, 12);
+  ctx.fillStyle = "#f0c14a";
+  ctx.fillRect(x - 8, y - 20, 16, 2);
+  ctx.fillRect(x - 1, y - 18, 2, 8);
+  ctx.fillStyle = "#8aa0aa";
+  if (pose.work) {
+    ctx.fillRect(x - 14, y - 18, 6, 3);
+    ctx.fillRect(x + 8, y - 18, 6, 3);
+  } else {
+    ctx.fillRect(x - 12, y - 18, 4, 6);
+    ctx.fillRect(x + 8, y - 18, 4, 6);
+  }
+  ctx.fillStyle = "#f4fbff";
+  ctx.fillRect(x - 5, y - 28, 10, 8);
+  ctx.fillStyle = "#7ef6e4";
+  ctx.fillRect(x - 5, y - 26, 10, 3);
+  ctx.fillStyle = "#f0c14a";
+  ctx.fillRect(x - 6, y - 31, 12, 3);
+  ctx.fillRect(x - 9, y - 29, 4, 2);
+}
+function captainPose(now, reduced, inFlight) {
+  if (reduced) return { step: 0, work: inFlight ? 1 : 0, shift: 0, idle: inFlight ? 0 : 1 };
+  if (inFlight) return { step: 0, work: 1, shift: 0, idle: 0 };
+  const t = now / 1000;
+  const walking = (t % 8) < 4;
+  return {
+    step: walking ? (Math.floor(t * 6) % 2) : 0,
+    work: 0,
+    shift: walking ? Math.sin(t * 2.2) * 12 : 0,
+    idle: walking ? 0 : 1
+  };
 }
 function plateText(ctx, text, x, y, color) {
   ctx.font = "12px ui-monospace, monospace";
@@ -403,12 +688,25 @@ function drawStation(now) {
   });
   state.rooms.forEach(room => {
     if (room.kind === "team") drawConsole(ctx, room.c + 1, room.r, "#7ef6e4");
+    if (room.kind === "bridge") drawConsole(ctx, room.c + 3, room.r + 1, "#e2c56a");
     if (room.kind === "lab") drawConsole(ctx, room.c + 3, room.r + 1, "#7ef6e4");
     if (room.kind === "exchange") {
       STATION_COINS.forEach((coin, index) => drawConsole(ctx, room.c + 1 + index, room.r + 1, "#e2b15a"));
     }
     if (room.kind === "vault") drawConsole(ctx, room.c + 3, room.r + 1, "#8fd4ff");
   });
+  if (state.review && state.review.applied === true) {
+    const bridgeRoom = state.rooms.find(room => room.kind === "bridge");
+    if (bridgeRoom) {
+      const from = isoOf(bridgeRoom.c + bridgeRoom.w / 2, bridgeRoom.r + bridgeRoom.h - 0.15);
+      const color = reduced ? "#7ef6e4" : (pulse > 0.55 ? "#d8fff6" : "#3ecfb8");
+      state.rooms.forEach(room => {
+        if (room.kind !== "lab" && room.kind !== "team") return;
+        const to = isoOf(room.c + room.w / 2, room.r + 0.25);
+        pixelLine(ctx, from.x, from.y, to.x, to.y, color);
+      });
+    }
+  }
   stationHits = [];
   state.rooms.forEach(room => {
     if (room.kind !== "team") return;
@@ -434,9 +732,39 @@ function drawStation(now) {
     const note = roomHasNotes(state, room.groupId);
     plateText(ctx, "G" + room.groupId, front.x, front.y + 14, note ? "#f0c14a" : "#d5e8e4");
   });
+  const bridge = state.rooms.find(room => room.kind === "bridge");
   const lab = state.rooms.find(room => room.kind === "lab");
   const exchange = state.rooms.find(room => room.kind === "exchange");
   const vault = state.rooms.find(room => room.kind === "vault");
+  if (bridge && state.review) {
+    const pose = captainPose(now, reduced, state.review.inFlight === true);
+    const foot = pose.work
+      ? isoOf(bridge.c + 3.7, bridge.r + 1.85)
+      : isoOf(bridge.c + bridge.w / 2, bridge.r + 1.7);
+    drawCaptain(ctx, foot.x + pose.shift, foot.y, pose);
+    stationHits.push({ x: foot.x + pose.shift, y: foot.y - 14, r: 18, robot: null, captain: true, room: bridge });
+    const plate = isoOf(bridge.c + bridge.w / 2, bridge.r + bridge.h - 0.2);
+    plateText(ctx, "BRIDGE", plate.x, plate.y + 14, "#e2c56a");
+  }
+  const mappedSeats = state.codeSource === "leaderboard.code" ? [] : (state.codeSeats || []);
+  const looseSeats = mappedSeats.filter(seat => seat.groupId == null).slice(0, 5);
+  const groupedSeats = mappedSeats.filter(seat => seat.groupId != null);
+  if (lab) {
+    looseSeats.forEach((seat, index) => {
+      const pose = crewPose(seat.id, now, reduced);
+      const p = isoOf(lab.c + 1.2 + index, lab.r + lab.h - 1.15);
+      drawCrew(ctx, p.x + pose.shift, p.y, pose, { codeStrategy: seat, leader: false, hasFills: false });
+      stationHits.push({ x: p.x + pose.shift, y: p.y - 6, r: 10, robot: null, codeSeat: seat, room: lab });
+    });
+  }
+  groupedSeats.forEach(seat => {
+    const room = state.rooms.find(item => item.kind === "team" && item.groupId === seat.groupId);
+    if (!room) return;
+    const pose = crewPose(seat.id, now, reduced);
+    const p = isoOf(room.c + room.w - 1.2, room.r + 1.4);
+    drawCrew(ctx, p.x + pose.shift, p.y, pose, { codeStrategy: seat, leader: false, hasFills: false });
+    stationHits.push({ x: p.x + pose.shift, y: p.y - 6, r: 10, robot: null, codeSeat: seat, room: room });
+  });
   if (lab) {
     const p = isoOf(lab.c + lab.w / 2, lab.r + 2);
     plateText(ctx, state.labMark, p.x, p.y, "#7ef6e4");
@@ -521,8 +849,17 @@ function buildStationState(bundle) {
   });
   const halls = [];
   rooms.forEach(room => {
-    if (room.kind === "team") hallFor(room).forEach(tile => halls.push(tile));
+    if (room.kind !== "team") return;
+    hallFor(room).forEach(tile => {
+      if (!tileInsideRoom(rooms, tile.c, tile.r)) halls.push(tile);
+    });
   });
+  const bridgeRoom = rooms.find(room => room.kind === "bridge");
+  if (bridgeRoom) {
+    const mid = bridgeRoom.c + Math.floor(bridgeRoom.w / 2);
+    halls.push({ c: mid, r: bridgeRoom.r + bridgeRoom.h, ids: [] });
+    halls.push({ c: mid, r: bridgeRoom.r + bridgeRoom.h + 1, ids: [] });
+  }
   const groupNotes = new Map();
   for (let i = 0; i < 20; i++) groupNotes.set(String(i), notesForGroup(health, i));
   const notes = sharedNoteList(health, leaderboard);
@@ -536,6 +873,8 @@ function buildStationState(bundle) {
   const split = yesNoSplit(health.side_bias);
   const coins = marketsByCoin(health.markets);
   const installed = agents.filter(agent => readCodeStrategy(agent));
+  const codeMap = codeSeatList(agents, archive, scoreboard);
+  const review = readReview(health, bundle.llm, scoreboard);
   const unseen = unseenSeries(generations);
   const lastUnseen = unseen.filter(point => point.value !== null && point.value !== undefined).slice(-1)[0];
 
@@ -555,27 +894,34 @@ function buildStationState(bundle) {
     hudCard("Paper", paperMetric, paperBody)
   ].join("");
 
-  let codeBody = "";
-  if (!installed.length) codeBody += "<p>leaderboard code rows: none</p>";
-  installed.slice(0, 3).forEach(agent => {
-    const strategy = readCodeStrategy(agent);
-    codeBody += "<p>" + escapeHtml(agent.agent_id) + " · " + escapeHtml(strategy.description) + "</p>";
-  });
-  codeBody += "<p>generation n_code " + escapeHtml(stationNum(summary.n_code, 0) === "—" && !present(summary.n_code) ? "—" : (present(summary.n_code) ? String(summary.n_code) : "—")) + "</p>";
-  if (!top) codeBody += "<p>idea archive —</p>";
-  else if (!top.length) codeBody += "<p>idea archive empty</p>";
-  else top.slice(0, 3).forEach(item => {
-    const name = item.name || item.hypothesis || "—";
-    const windows = present(item.windows) ? item.windows + "/" + gate : "—";
-    const net = present(item.unseen_net) ? netText(item.unseen_net) : "—";
-    codeBody += "<p>" + escapeHtml(name) + " · " + escapeHtml(windows) + " · " + escapeHtml(net) + "</p>";
+  let codeBody = "<p>leaderboard code rows: " + (installed.length ? String(installed.length) : "none") + "</p>";
+  codeBody += "<p>seats " + escapeHtml(codeMap.source) + "</p>";
+  codeBody += "<p>generation n_code " + escapeHtml(present(summary.n_code) ? String(summary.n_code) : "—") + "</p>";
+  if (!codeMap.seats.length) codeBody += "<p>code seats —</p>";
+  codeMap.seats.slice(0, 5).forEach(seat => {
+    const windows = present(seat.windows) ? seat.windows + "/" + gate : "—";
+    const net = present(seat.unseen) ? netText(seat.unseen) : "—";
+    const group = seat.groupId == null ? "group —" : "G" + seat.groupId;
+    codeBody += "<p>" + escapeHtml(seat.name) + " · " + escapeHtml(windows) + " · " + escapeHtml(net) + " · " + escapeHtml(group) + "</p>";
   });
 
-  let yesBody = "<p>—</p>";
+  let yesBody = "<p>health.side_bias —</p>";
   if (split) {
-    yesBody = "<p>YES " + escapeHtml(stationPct(split.share)) + "</p><p>max " + escapeHtml(present(split.max) ? split.max : "—") + "</p>";
+    const noShare = split.share == null ? null : 1 - split.share;
+    yesBody = "<p>health.side_bias</p><p>YES " + escapeHtml(stationPct(split.share)) + " · NO " + escapeHtml(stationPct(noShare)) + "</p><p>max " + escapeHtml(present(split.max) ? split.max : "—") + "</p>";
   }
-  const diversityBody = "<p>" + escapeHtml(stationNum(health.n_behavior_clusters, 0)) + " clusters · largest " + escapeHtml(stationPct(health.largest_cluster_share)) + "</p>";
+  const groupDiversity = Array.isArray(summary.group_diversity) ? summary.group_diversity.length + " groups" : "—";
+  const diversityBody = [
+    "<p>health.diversity " + escapeHtml(stationNum(health.diversity, 4)) + "</p>",
+    "<p>health.n_behavior_clusters " + escapeHtml(present(health.n_behavior_clusters) ? String(health.n_behavior_clusters) : "—") + "</p>",
+    "<p>health.largest_cluster_share " + escapeHtml(stationPct(health.largest_cluster_share)) + "</p>",
+    "<p>summary.diversity " + escapeHtml(stationNum(summary.diversity, 4)) + "</p>",
+    "<p>summary.next_diversity " + escapeHtml(stationNum(summary.next_diversity, 4)) + "</p>",
+    "<p>summary.largest_cluster_share " + escapeHtml(stationPct(summary.largest_cluster_share)) + "</p>",
+    "<p>summary.next_largest_cluster_share " + escapeHtml(stationPct(summary.next_largest_cluster_share)) + "</p>",
+    "<p>summary.n_behavior_clusters " + escapeHtml(present(summary.n_behavior_clusters) ? String(summary.n_behavior_clusters) : "—") + "</p>",
+    "<p>summary.group_diversity " + escapeHtml(groupDiversity) + "</p>"
+  ].join("");
   const publish = (bundle.manifest && present(bundle.manifest.published_at)) ? bundle.manifest.published_at : "—";
   const healthBody = "<p>RSS " + escapeHtml(stationNum(health.mem_rss_mb, 0)) + " / free " + escapeHtml(stationNum(health.mem_available_mb, 0)) + " MB</p>"
     + "<p>spot lag " + escapeHtml(stationNum(health.spot_lag_s, 1) === "—" ? "—" : stationNum(health.spot_lag_s, 1) + "s") + " · " + escapeHtml(present(health.spot_source) ? health.spot_source : "—") + "</p>"
@@ -584,9 +930,38 @@ function buildStationState(bundle) {
   const rightHtml = [
     hudCard("Code strategies", present(summary.n_code) ? escapeHtml(summary.n_code) : (installed.length ? String(installed.length) : "—"), codeBody),
     hudCard("YES / NO", split ? escapeHtml(stationPct(split.share)) : "—", yesBody),
-    hudCard("Diversity", escapeHtml(stationNum(health.diversity, 3)), diversityBody),
+    hudCard("Diversity", escapeHtml(stationNum(health.diversity, 4)), diversityBody),
     hudCard("Health", escapeHtml(stationNum(health.mem_rss_mb, 0)), healthBody)
   ].join("");
+
+  const appliedText = review.applied === true ? "yes" : (review.applied === false ? "no" : "—");
+  const flightText = review.inFlight === true ? "yes" : (review.inFlight === false ? "no" : "—");
+  let bridgeHtml = "<div class='room-card'><div class='label'>Command bridge</div><div class='metric'>" + escapeHtml(review.decision || "—") + "</div>";
+  bridgeHtml += "<p>" + escapeHtml(review.time || "—") + "</p>";
+  bridgeHtml += "<p>model " + escapeHtml(review.model || "—") + (review.provider ? " · " + escapeHtml(review.provider) : "") + "</p>";
+  bridgeHtml += "<p>prompt " + escapeHtml(review.prompt ? review.prompt.key + " " + review.prompt.id : "—") + "</p>";
+  bridgeHtml += "<p>writer paused " + escapeHtml(review.paused || "—") + "</p>";
+  bridgeHtml += "<p>in flight " + flightText + " · applied " + appliedText + "</p>";
+  bridgeHtml += "<p>" + escapeHtml(review.source) + "</p>";
+  bridgeHtml += "<p>" + escapeHtml(review.reasoning ? stationClip(review.reasoning, 180) : "reasoning —") + "</p>";
+  const suggestionLines = [];
+  if (review.bounds && Object.keys(review.bounds).length) {
+    Object.keys(review.bounds).forEach(name => {
+      const value = review.bounds[name];
+      const text = Array.isArray(value) ? "[" + value.join(", ") + "]" : String(value);
+      suggestionLines.push("applied " + name + " " + text);
+    });
+  }
+  review.ideas.forEach(item => {
+    const note = item.note ? " · " + item.note : "";
+    suggestionLines.push("queued " + (item.name || "—") + " " + (item.direction || "—") + note);
+  });
+  review.rejected.forEach(reason => suggestionLines.push("rejected · " + reason));
+  if (!suggestionLines.length) bridgeHtml += "<p>suggestions —</p>";
+  suggestionLines.slice(0, 4).forEach(line => {
+    bridgeHtml += "<p>" + escapeHtml(stationClip(line, 140)) + "</p>";
+  });
+  bridgeHtml += "</div>";
 
   const drafts = scoreboard && present(scoreboard.drafts_per_hour) ? String(scoreboard.drafts_per_hour) : "—";
   const pass = scoreboard ? stationPct(scoreboard.pass_rate) : "—";
@@ -619,7 +994,8 @@ function buildStationState(bundle) {
       + " Kraken " + escapeHtml(spot == null ? "—" : spot) + "</p>";
   });
   exHtml += "<p>spot lag " + escapeHtml(present(health.spot_lag_s) ? stationNum(health.spot_lag_s, 1) + "s" : "—")
-    + " · " + escapeHtml(present(health.spot_source) ? health.spot_source : "—") + "</p></div>";
+    + " · " + escapeHtml(present(health.spot_source) ? health.spot_source : "—") + "</p>";
+  exHtml += "<p>per-coin Kraken spot —</p></div>";
 
   let vaultHtml = "<div class='room-card'><div class='label'>Vault</div><div class='metric'>" + (grads == null ? "—" : String(grads)) + "</div>";
   vaultHtml += "<p>graduates" + (grads === 0 ? ": 0" : "") + "</p>";
@@ -648,14 +1024,19 @@ function buildStationState(bundle) {
     each: each,
     leftHtml: leftHtml,
     rightHtml: rightHtml,
-    roomHtml: labHtml + exHtml + vaultHtml,
-    legend: "Rooms are the 20 groups. Moving crew are agents named in this snapshot. Still pixels are seats the snapshot does not name, and only when the population divides evenly. Purple crew appear only when a leaderboard row sets code. Amber halls are groups with notes in this snapshot. Gray halls are the station floor. Walking is decoration, not a trade.",
+    roomHtml: bridgeHtml + labHtml + exHtml + vaultHtml,
+    legend: "The command bridge is the latest llm.calls review. The captain stands at the console only while that review is in flight, and walks or idles otherwise. Cyan lines light only when its status is accepted and bounds are non-empty. Purple crew are code strategies from leaderboard code, or from idea_archive.top when no leaderboard row sets code. Archive seats have no group id. Amber halls are group notes. Gray halls are the floor. Walking is decoration, not a trade.",
     unseen: unseen,
     labMark: labMark,
     vaultMark: vaultMark,
+    review: review,
+    codeSeats: codeMap.seats,
+    codeSource: codeMap.source,
+    groupDiversity: Array.isArray(summary.group_diversity) ? summary.group_diversity : null,
     labTip: "AI lab. Drafts per hour " + drafts + ". Pass rate " + pass + ". " + (ideaText || "Current idea —"),
-    exchangeTip: "Exchange. Kalshi yes bid/ask and strike from health.markets. Kraken spot is — when the gist has no spot price.",
-    vaultTip: "Vault. Graduates " + (grads == null ? "—" : grads) + ". Gate " + gate + " windows."
+    exchangeTip: "Exchange. Kalshi yes bid/ask and strike from health.markets. Per-coin Kraken spot is — until a market has kraken_spot or spot, or health.kraken has the coin.",
+    vaultTip: "Vault. Graduates " + (grads == null ? "—" : grads) + ". Gate " + gate + " windows.",
+    bridgeTip: "Command bridge. " + (review.decision || "decision —") + ". " + (review.time || "time —") + ". model " + (review.model || "—") + ". in flight " + flightText + ". applied " + appliedText + "."
   };
 }
 function ensureStationLoop() {
@@ -693,7 +1074,7 @@ function stationHit(event) {
     const hit = stationHits[i];
     const dx = hit.x - point.x;
     const dy = hit.y - point.y;
-    if (dx * dx + dy * dy <= hit.r * hit.r) return { robot: hit.robot, room: hit.room };
+    if (dx * dx + dy * dy <= hit.r * hit.r) return { robot: hit.robot, room: hit.room, captain: hit.captain, codeSeat: hit.codeSeat };
   }
   const tile = stationTileAt(point.x, point.y);
   const room = stationState.rooms.find(item => tile.c >= item.c && tile.c < item.c + item.w && tile.r >= item.r && tile.r < item.r + item.h);
@@ -703,7 +1084,14 @@ function stationHit(event) {
 function stationTipText(hit) {
   if (!hit) return "";
   if (hit.robot) return robotTitle(hit.robot);
+  if (hit.captain) return stationState.bridgeTip;
+  if (hit.codeSeat) {
+    const seat = hit.codeSeat;
+    const group = seat.groupId == null ? "group —" : "group " + seat.groupId;
+    return seat.source + " · " + seat.name + " · " + group + " · " + (present(seat.description) ? seat.description : "—");
+  }
   const room = hit.room;
+  if (room.kind === "bridge") return stationState.bridgeTip;
   if (room.kind === "lab") return stationState.labTip;
   if (room.kind === "exchange") return stationState.exchangeTip;
   if (room.kind === "vault") return stationState.vaultTip;
@@ -719,6 +1107,17 @@ function stationTipText(hit) {
   if (!notes || notes.missing) bits.push("group notes —");
   else if (!notes.notes.length) bits.push("no group notes");
   else bits.push(notes.notes.length + " notes · " + formatNote(notes.notes[0]));
+  const diversityRows = stationState.groupDiversity;
+  if (!Array.isArray(diversityRows)) bits.push("summary.group_diversity —");
+  else {
+    const row = diversityRows.find(item => String(item.group) === String(room.groupId));
+    if (!row) bits.push("summary.group_diversity —");
+    else {
+      bits.push("diversity " + stationNum(row.diversity, 4));
+      bits.push("largest " + stationPct(row.largest_cluster_share));
+      bits.push("clusters " + (present(row.n_clusters) ? row.n_clusters : "—"));
+    }
+  }
   return bits.join(" · ");
 }
 function onStationPointer(event) {
