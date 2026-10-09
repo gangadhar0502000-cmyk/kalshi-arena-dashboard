@@ -167,12 +167,15 @@ function showAgent(agent) {
   const ism = agent.is_metrics || {};
   document.getElementById("agent-title").textContent =
     agent.agent_id + " · " + (agent.origin || "") + " · " + statusLabel(agent, ism);
+  const strategy = readCodeStrategy(agent);
+  const oosNet = readOosNet(agent);
   document.getElementById("genome").textContent =
     statusLabel(agent, ism) + "\n\n" +
     JSON.stringify(agent.genome || {}, null, 2) +
     "\n\nselection metrics\n" + JSON.stringify(scrubMetrics(ism), null, 2) +
     "\n\nholdout metrics\n" + JSON.stringify(scrubMetrics(agent.oos_metrics || {}), null, 2) +
-    (readCodeStrategy(agent) ? "\n\nAI-written code strategy\n" + readCodeStrategy(agent).description : "");
+    (strategy ? "\n\nAI-written code strategy\n" + strategy.description : "") +
+    (oosNet !== undefined ? "\nunseen net " + netText(oosNet) : "");
   drawEquity(agent.equity || []);
   renderTrades(latestTrades.filter(trade => trade.agent_id === agent.agent_id));
   document.querySelectorAll("#board tbody tr").forEach(row => {
@@ -228,46 +231,49 @@ function groupIdOf(agent) {
   if (agent && present(agent.group_id)) return String(agent.group_id);
   return null;
 }
+function flagOn(value) {
+  return value === true || value === "yes" || value === "true" || value === 1 || value === "ai" || value === "code";
+}
+function readOosNet(agent) {
+  if (!agent || typeof agent !== "object") return undefined;
+  if (present(agent.oos_net)) return agent.oos_net;
+  if (agent.is_metrics && typeof agent.is_metrics === "object" && present(agent.is_metrics.oos_net)) return agent.is_metrics.oos_net;
+  return undefined;
+}
 function readCodeStrategy(agent) {
   if (!agent || typeof agent !== "object") return null;
-  const bags = [];
+  const flagNames = ["ai_written", "ai_code", "code_agent", "llm_code", "code_strategy_flag", "code"];
+  const bags = [agent];
   if (agent.is_metrics && typeof agent.is_metrics === "object") bags.push(agent.is_metrics);
   [agent.code_strategy, agent.strategy, agent.ai_strategy].forEach(obj => {
     if (obj && typeof obj === "object" && !Array.isArray(obj)) bags.push(obj);
   });
-  const flagNames = ["ai_written", "ai_code", "code_agent", "llm_code", "code_strategy_flag"];
   let flagged = false;
-  let description = "";
-  function flagOn(value) {
-    return value === true || value === "yes" || value === "true" || value === 1 || value === "ai" || value === "code";
-  }
   bags.forEach(bag => {
     flagNames.forEach(name => {
       if (flagOn(bag[name])) flagged = true;
     });
-    ["code_description", "strategy_description", "ai_description", "code_text", "strategy_text"].forEach(name => {
-      if (present(bag[name])) description = String(bag[name]);
-    });
-    if (bag !== agent && present(bag.description)) description = String(bag.description);
-    else if (bag !== agent && present(bag.text)) description = String(bag.text);
   });
   [agent.code_strategy, agent.strategy, agent.ai_strategy].forEach(obj => {
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
     const flag = obj.ai_written != null ? obj.ai_written : (obj.ai_code != null ? obj.ai_code : (obj.flag != null ? obj.flag : (obj.enabled != null ? obj.enabled : obj.code)));
     if (flagOn(flag)) flagged = true;
-    if (present(obj.description)) description = String(obj.description);
-    else if (present(obj.text)) description = String(obj.text);
   });
-  [agent, agent.is_metrics || {}].forEach(bag => {
-    flagNames.forEach(name => {
-      if (flagOn(bag[name])) flagged = true;
-    });
+  if (!flagged) return null;
+  let description = "";
+  bags.forEach(bag => {
     ["code_description", "strategy_description", "ai_description", "code_text", "strategy_text"].forEach(name => {
       if (present(bag[name])) description = String(bag[name]);
     });
   });
-  if (!flagged) return null;
-  return { description: description || "description missing" };
+  if (present(agent.description)) description = String(agent.description);
+  [agent.code_strategy, agent.strategy, agent.ai_strategy].forEach(obj => {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
+    if (present(obj.description)) description = String(obj.description);
+    else if (present(obj.text)) description = String(obj.text);
+  });
+  const oosNet = readOosNet(agent);
+  return { description: description || "description missing", oosNet: oosNet };
 }
 function leaderFlag(agent) {
   const metrics = (agent && agent.is_metrics) || {};
@@ -353,6 +359,7 @@ function buildArenaModel(agents, trades, leaderInfo, notes) {
       oosScore: agent.oos_score,
       placeNote: "",
       codeStrategy: readCodeStrategy(agent),
+      oosNet: readOosNet(agent),
       agent: agent
     });
   });
@@ -374,6 +381,7 @@ function buildArenaModel(agents, trades, leaderInfo, notes) {
       oosScore: undefined,
       placeNote: placeNote,
       codeStrategy: null,
+      oosNet: undefined,
       agent: null
     });
   });
@@ -409,6 +417,7 @@ function buildArenaModel(agents, trades, leaderInfo, notes) {
       oosScore: undefined,
       placeNote: parsed ? "Group comes from the agent id. Leaderboard row is missing." : "Group is missing. Leaderboard row is missing.",
       codeStrategy: null,
+      oosNet: undefined,
       agent: null
     });
     seen.add(id);
@@ -440,8 +449,15 @@ function robotTitle(robot) {
   bits.push("unseen " + scoreText(robot.oosScore));
   if (robot.placeNote) bits.push(robot.placeNote);
   if (robot.hasFills) bits.push("has simulated fills in this snapshot");
+  if (robot.oosNet !== undefined) bits.push("unseen net " + netText(robot.oosNet));
   if (robot.codeStrategy) bits.push("AI-written code: " + robot.codeStrategy.description);
   return bits.join(" · ");
+}
+function netText(value) {
+  if (!present(value)) return "missing";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  return "$" + number.toFixed(2);
 }
 function staggerDelay(id) {
   let hash = 0;
@@ -520,47 +536,155 @@ function hashPhase(id) {
   return (hash % 628) / 100;
 }
 function poseAt(id, now, reduced) {
-  if (reduced) return { leg: 0.4, arm: -0.25, gesture: 0, facing: 1, bob: 0 };
+  if (reduced) return { swing: 0.22, gesture: 0, facing: 1, bob: 0 };
   const t = now / 1000 + hashPhase(id);
-  const leg = Math.sin(t * 9.2);
-  const arm = Math.sin(t * 9.2 + Math.PI) * 0.9;
-  const burst = t % 1.55;
-  const gesture = burst < 0.2 ? Math.sin((burst / 0.2) * Math.PI) : 0;
-  const cycle = 1.35;
+  const swing = Math.sin(t * 8.2);
+  const burst = t % 1.7;
+  const gesture = burst < 0.22 ? Math.sin((burst / 0.22) * Math.PI) : 0;
+  const cycle = 1.5;
   const local = t % cycle;
   const dir = Math.floor(t / cycle) % 2 === 0 ? 1 : -1;
-  const facing = local < 0.08 ? -dir + dir * 2 * (local / 0.08) : dir;
-  return { leg: leg, arm: arm, gesture: gesture, facing: facing, bob: Math.abs(Math.sin(t * 9.2)) * -1.6 };
+  const facing = local < 0.07 ? -dir + dir * 2 * (local / 0.07) : dir;
+  return { swing: swing, gesture: gesture, facing: facing, bob: Math.abs(Math.sin(t * 8.2)) * -0.9 };
 }
-function originStroke(origin, code) {
-  if (code) return { core: "#e7a6ff", glow: "rgba(210, 120, 255, 0.85)" };
+function visorColor(origin, code) {
+  if (code) return "#ff5af0";
   const map = {
-    crossover: ["#e7fff8", "rgba(120, 255, 235, 0.9)"],
-    elite: ["#d7ecff", "rgba(140, 200, 255, 0.9)"],
-    llm: ["#e7ffc4", "rgba(190, 255, 140, 0.85)"],
-    immigrant: ["#ffe0c4", "rgba(255, 180, 120, 0.9)"],
-    migrant: ["#f0e0ff", "rgba(210, 170, 255, 0.9)"]
+    crossover: "#7ef6e4",
+    elite: "#8fd4ff",
+    llm: "#c6f58a",
+    immigrant: "#ffb068",
+    migrant: "#d2a6ff"
   };
-  const pair = map[origin] || ["#e5fff8", "rgba(180, 230, 225, 0.85)"];
-  return { core: pair[0], glow: pair[1] };
+  return map[origin] || "#d5fff6";
 }
-function sceneMetrics(width, count) {
-  const cols = width < 760 ? 2 : 5;
-  const total = Math.max(count, 1);
-  const rows = Math.ceil(total / cols);
-  const cellW = width / cols;
-  const radius = Math.max(40, Math.min(cellW * 0.36, 78));
-  const cellH = radius * 2 + 28;
-  return { cols: cols, rows: rows, cellW: cellW, cellH: cellH, radius: radius, height: rows * cellH + 8 };
+function metalStyle(code) {
+  if (code) return { dark: "#3a2450", mid: "#8d6eab", lite: "#f0e2ff", edge: "#c9a6e4" };
+  return { dark: "#24343c", mid: "#7d949d", lite: "#e4eef2", edge: "#b7c8ce" };
+}
+function sceneBox(width) {
+  const height = Math.max(480, Math.min(740, Math.round(width * (width < 760 ? 1.28 : 0.66))));
+  return { width: width, height: height, caption: 22 };
+}
+function relaxOrbs(width, height, count, radius) {
+  const cx = width / 2;
+  const cy = height / 2;
+  const pts = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  const rx = Math.min(width * 0.34, height * 0.52);
+  const ry = height * 0.36;
+  for (let i = 0; i < count; i++) {
+    const t = count === 1 ? 0 : Math.sqrt((i + 0.5) / count);
+    const ang = i * golden + 0.35;
+    const jitter = ((i * 47) % 11) / 10;
+    pts.push({
+      x: cx + Math.cos(ang + jitter) * rx * t,
+      y: cy + Math.sin(ang - jitter * 0.6) * ry * t
+    });
+  }
+  const minSep = radius * 2.2;
+  for (let iter = 0; iter < 26; iter++) {
+    for (let i = 0; i < count; i++) {
+      let fx = (cx - pts[i].x) * 0.01;
+      let fy = (cy - pts[i].y) * 0.01;
+      for (let j = 0; j < count; j++) {
+        if (i === j) continue;
+        let dx = pts[i].x - pts[j].x;
+        let dy = pts[i].y - pts[j].y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { dx = 1; dy = 0; d2 = 1; }
+        const d = Math.sqrt(d2);
+        const rep = (minSep * minSep) / d2;
+        fx += (dx / d) * rep * 0.85;
+        fy += (dy / d) * rep * 0.85;
+        if (d < minSep) {
+          const push = (minSep - d) * 0.42;
+          fx += (dx / d) * push;
+          fy += (dy / d) * push;
+        }
+      }
+      pts[i].x += Math.max(-14, Math.min(14, fx * 0.16));
+      pts[i].y += Math.max(-14, Math.min(14, fy * 0.16));
+      const dx0 = pts[i].x - cx;
+      const dy0 = pts[i].y - cy;
+      const ex = dx0 / rx;
+      const ey = dy0 / ry;
+      if (ex * ex + ey * ey > 1) {
+        const pull = 1 / Math.sqrt(ex * ex + ey * ey);
+        pts[i].x = cx + dx0 * pull;
+        pts[i].y = cy + dy0 * pull;
+      }
+      const padX = radius + 8;
+      const padY = radius + 6;
+      pts[i].x = Math.max(padX, Math.min(width - padX, pts[i].x));
+      pts[i].y = Math.max(padY, Math.min(height - padY, pts[i].y));
+    }
+  }
+  return pts;
+}
+function buildInner(orb) {
+  const named = orb.group.robots;
+  const unnamed = orb.unnamed;
+  const nodes = [{ x: 0, y: 0, kind: "hub" }];
+  named.forEach((robot, i) => {
+    const ang = named.length === 1 ? -Math.PI / 2 : -Math.PI / 2 + (i / named.length) * Math.PI * 2;
+    const dist = orb.r * (named.length === 1 ? 0.18 : 0.32);
+    nodes.push({
+      x: Math.cos(ang) * dist,
+      y: Math.sin(ang) * dist * 0.86,
+      kind: "robot",
+      robot: robot,
+      leader: !!robot.leader
+    });
+  });
+  const span = Math.max(1, unnamed - 1);
+  for (let i = 0; i < unnamed; i++) {
+    const ang = i * 2.399963229728653 + 0.4;
+    const rad = orb.r * (0.48 + 0.24 * (i / span));
+    nodes.push({ x: Math.cos(ang) * rad, y: Math.sin(ang) * rad * 0.86, kind: "dot" });
+  }
+  const links = [];
+  for (let i = 1; i < nodes.length; i++) {
+    if (nodes[i].kind === "robot") links.push({ a: 0, b: i, leader: !!nodes[i].leader });
+  }
+  const dots = [];
+  nodes.forEach((node, index) => { if (node.kind === "dot") dots.push(index); });
+  for (let i = 0; i < dots.length; i++) {
+    links.push({ a: dots[i], b: dots[(i + 1) % dots.length], leader: false });
+    if (i % 5 === 0 && named.length) {
+      let best = 1;
+      let bestD = Infinity;
+      for (let j = 1; j < nodes.length; j++) {
+        if (nodes[j].kind !== "robot") continue;
+        const dx = nodes[j].x - nodes[dots[i]].x;
+        const dy = nodes[j].y - nodes[dots[i]].y;
+        const d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = j; }
+      }
+      links.push({ a: dots[i], b: best, leader: false });
+    }
+  }
+  if (!dots.length && named.length > 1) {
+    for (let i = 0; i < named.length; i++) {
+      const b = ((i + 1) % named.length) + 1;
+      links.push({ a: i + 1, b: b, leader: false });
+    }
+  }
+  orb.nodes = nodes;
+  orb.innerLinks = links;
 }
 function layoutOrbs() {
   const stage = document.getElementById("arena-stage");
   const canvas = document.getElementById("arena-canvas");
   if (!stage || !canvas) return;
   const width = Math.max(280, stage.clientWidth || 280);
-  const metrics = sceneMetrics(width, arenaModel.length || 1);
-  const height = arenaModel.length ? metrics.height : 78;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const box = sceneBox(width);
+  const count = Math.max(arenaModel.length, 1);
+  const radius = arenaModel.length
+    ? Math.max(32, Math.min(64, Math.sqrt((width * (box.height - box.caption)) / count) * 0.24))
+    : 36;
+  const height = arenaModel.length ? box.height : 78;
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   sceneSize = { width: width, height: height, dpr: dpr };
   canvas.style.width = width + "px";
   canvas.style.height = height + "px";
@@ -568,41 +692,58 @@ function layoutOrbs() {
   canvas.height = Math.round(height * dpr);
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const pts = relaxOrbs(width, height - box.caption, count, radius);
   orbLayout = [];
   sceneLinks = [];
   arenaModel.forEach((group, index) => {
-    const col = index % metrics.cols;
-    const row = Math.floor(index / metrics.cols);
+    const phase = hashPhase(group.id);
     const orb = {
       id: String(group.id),
-      x: col * metrics.cellW + metrics.cellW / 2,
-      y: 6 + row * metrics.cellH + metrics.radius,
-      r: metrics.radius,
+      restX: pts[index].x,
+      restY: pts[index].y,
+      x: pts[index].x,
+      y: pts[index].y,
+      r: radius,
+      phase: phase,
+      spin0: (index % 2 === 0 ? 1 : -1) * (0.4 + (index % 5) * 0.15),
+      spinDir: index % 2 === 0 ? 1 : -1,
       group: group,
-      dots: [],
-      unnamed: 0
+      unnamed: group.id !== "missing" && typeof arenaEach === "number" ? Math.max(0, arenaEach - group.robots.length) : 0
     };
-    const named = group.robots;
-    named.forEach((robot, i) => {
-      const ang = named.length === 1 ? -Math.PI / 2 : -Math.PI / 2 + (i / named.length) * Math.PI * 2;
-      const dist = named.length === 1 ? 0 : orb.r * 0.34;
-      robot.ax = Math.cos(ang) * dist;
-      robot.ay = Math.sin(ang) * dist * 0.78;
-    });
-    const unnamed = group.id !== "missing" && typeof arenaEach === "number" ? Math.max(0, arenaEach - named.length) : 0;
-    orb.unnamed = unnamed;
-    const span = Math.max(1, unnamed - 1);
-    for (let i = 0; i < unnamed; i++) {
-      const ang = i * 2.399963229728653;
-      const rad = orb.r * (0.56 + 0.34 * (i / span));
-      orb.dots.push({ x: Math.cos(ang) * rad, y: Math.sin(ang) * rad * 0.88 });
-    }
     orbLayout.push(orb);
   });
-  const cols = metrics.cols;
+  let minD = Infinity;
   for (let i = 0; i < orbLayout.length; i++) {
-    if (i + 1 < orbLayout.length && Math.floor(i / cols) === Math.floor((i + 1) / cols)) sceneLinks.push([i, i + 1]);
-    if (i + cols < orbLayout.length) sceneLinks.push([i, i + cols]);
+    for (let j = i + 1; j < orbLayout.length; j++) {
+      const d = Math.hypot(orbLayout[i].restX - orbLayout[j].restX, orbLayout[i].restY - orbLayout[j].restY);
+      if (d < minD) minD = d;
+    }
+  }
+  const fitted = orbLayout.length > 1 ? Math.max(34, Math.min(radius, minD * 0.46)) : radius;
+  orbLayout.forEach(orb => {
+    orb.r = fitted;
+    buildInner(orb);
+  });
+  const seen = new Set();
+  for (let i = 0; i < orbLayout.length; i++) {
+    const near = [];
+    for (let j = 0; j < orbLayout.length; j++) {
+      if (i === j) continue;
+      const dx = orbLayout[i].restX - orbLayout[j].restX;
+      const dy = orbLayout[i].restY - orbLayout[j].restY;
+      near.push({ j: j, d: dx * dx + dy * dy });
+    }
+    near.sort((a, b) => a.d - b.d);
+    for (let n = 0; n < Math.min(3, near.length); n++) {
+      const j = near[n].j;
+      const a = Math.min(i, j);
+      const b = Math.max(i, j);
+      const key = a + ":" + b;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const bend = ((a * 17 + b * 7) % 2 === 0 ? 1 : -1) * (26 + (a % 5) * 7);
+      sceneLinks.push({ a: a, b: b, bend: bend, phase: ((a * 13 + b * 5) % 100) / 100 });
+    }
   }
 }
 function watchStage() {
@@ -649,108 +790,177 @@ function paintTicker(health, summary, notes) {
   const once = items.map(item => "<span>" + escapeHtml(item) + "</span>").join("");
   track.innerHTML = prefersReducedMotion() ? once : once + once;
 }
-function traceHumanoid(ctx, pose) {
-  const leg = pose.leg;
-  const arm = pose.arm;
-  const lift = pose.gesture * 8;
+function fillLimb(ctx, x0, y0, x1, y1, w0, w1, color, edge) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy / len;
+  const py = dx / len;
   ctx.beginPath();
-  ctx.moveTo(-2.1, 4.5);
-  ctx.lineTo(-2.1 + Math.sin(leg) * 3.1, 9.5);
-  ctx.lineTo(-2.1 + Math.sin(leg) * 5.4, 14.5);
-  ctx.moveTo(-3.4 + Math.sin(leg) * 5.4, 14.5);
-  ctx.lineTo(1.2 + Math.sin(leg) * 5.4, 14.5);
-  ctx.moveTo(2.1, 4.5);
-  ctx.lineTo(2.1 + Math.sin(leg + Math.PI) * 3.1, 9.5);
-  ctx.lineTo(2.1 + Math.sin(leg + Math.PI) * 5.4, 14.5);
-  ctx.moveTo(0.6 + Math.sin(leg + Math.PI) * 5.4, 14.5);
-  ctx.lineTo(5.2 + Math.sin(leg + Math.PI) * 5.4, 14.5);
-  ctx.moveTo(-4.3, -6.2);
-  ctx.lineTo(4.3, -6.2);
-  ctx.lineTo(3.5, 4.6);
-  ctx.lineTo(-3.5, 4.6);
+  ctx.moveTo(x0 + px * w0, y0 + py * w0);
+  ctx.lineTo(x1 + px * w1, y1 + py * w1);
+  ctx.lineTo(x1 - px * w1, y1 - py * w1);
+  ctx.lineTo(x0 - px * w0, y0 - py * w0);
   ctx.closePath();
-  ctx.moveTo(-4.3, -4);
-  ctx.lineTo(-8.6, -1 + Math.sin(arm) * 3.2);
-  ctx.lineTo(-11.2, 3.5 + Math.sin(arm) * 2.4);
-  ctx.moveTo(4.3, -4);
-  ctx.lineTo(8.4, -6 - lift + Math.sin(arm + 0.8) * 2);
-  ctx.lineTo(11, -2 - lift);
-  ctx.moveTo(-3.5, -12.8);
-  ctx.lineTo(3.5, -12.8);
-  ctx.lineTo(3.5, -7.2);
-  ctx.lineTo(-3.5, -7.2);
-  ctx.closePath();
-  ctx.moveTo(0, -7.2);
-  ctx.lineTo(0, -6.2);
-  ctx.moveTo(0, -12.8);
-  ctx.lineTo(0, -15.6);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.strokeStyle = edge;
+  ctx.lineWidth = 0.45;
+  ctx.stroke();
+}
+function jointAt(ctx, x, y, r, color, edge) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.strokeStyle = edge;
+  ctx.lineWidth = 0.45;
+  ctx.stroke();
 }
 function drawHumanoid(ctx, x, y, robot, now, reduced) {
   const pose = poseAt(robot.id, now, reduced);
-  const style = originStroke(robot.origin, robot.codeStrategy);
+  const code = !!robot.codeStrategy;
+  const metal = metalStyle(code);
+  const visor = visorColor(robot.origin, code);
   const crowd = robot.crowd || 1;
-  const fit = crowd > 7 ? 0.7 : crowd > 4 ? 0.84 : 1;
-  const scale = (robot.leader ? 1.18 : 1) * fit;
+  const fit = crowd > 8 ? 0.72 : crowd > 5 ? 0.84 : crowd > 3 ? 0.92 : 1;
+  const scale = (robot.leader ? 1.42 : 1.22) * fit;
+  const swing = pose.swing;
+  const lift = pose.gesture;
   ctx.save();
   ctx.translate(x, y + pose.bob);
-  ctx.scale(pose.facing * scale, scale);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.strokeStyle = style.glow;
-  ctx.globalAlpha = 0.35;
-  ctx.lineWidth = 3.4;
-  traceHumanoid(ctx, pose);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = style.core;
-  ctx.lineWidth = 1.35;
-  traceHumanoid(ctx, pose);
-  ctx.stroke();
-  ctx.fillStyle = robot.leader ? "#f0c14a" : style.core;
-  ctx.fillRect(-2.1, -11.2, 1.3, 1.3);
-  ctx.fillRect(0.8, -11.2, 1.3, 1.3);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.38)";
   ctx.beginPath();
-  ctx.arc(0, -15.6, 1.15, 0, Math.PI * 2);
+  ctx.ellipse(0, 12.6, 6.4, 2.05, 0, 0, Math.PI * 2);
   ctx.fill();
+  ctx.scale(pose.facing, 1);
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  const lKnee = { x: -2.15 + swing * 1.7, y: 8.1 };
+  const lFoot = { x: -2.5 + swing * 3.1, y: 12.15 };
+  const rKnee = { x: 2.15 - swing * 1.7, y: 8.1 };
+  const rFoot = { x: 2.5 - swing * 3.1, y: 12.15 };
+  const lElb = { x: -7.1, y: -1.6 + swing * 2.2 };
+  const lHand = { x: -9.2, y: 2.1 + swing * 3.1 };
+  const rElb = { x: 6.8, y: -3.2 - lift * 4.2 - swing * 1.4 };
+  const rHand = { x: 8.8, y: 0.2 - lift * 6.6 - swing * 2 };
+  fillLimb(ctx, -1.7, 4.6, lKnee.x, lKnee.y, 2.15, 1.65, metal.dark, metal.edge);
+  fillLimb(ctx, lKnee.x, lKnee.y, lFoot.x, lFoot.y, 1.55, 1.15, metal.mid, metal.edge);
+  fillLimb(ctx, 1.7, 4.6, rKnee.x, rKnee.y, 2.15, 1.65, metal.dark, metal.edge);
+  fillLimb(ctx, rKnee.x, rKnee.y, rFoot.x, rFoot.y, 1.55, 1.15, metal.mid, metal.edge);
+  jointAt(ctx, lKnee.x, lKnee.y, 1.15, metal.lite, metal.edge);
+  jointAt(ctx, rKnee.x, rKnee.y, 1.15, metal.lite, metal.edge);
+  ctx.fillStyle = metal.dark;
+  ctx.beginPath();
+  ctx.ellipse(lFoot.x, lFoot.y, 1.7, 0.7, swing * 0.2, 0, Math.PI * 2);
+  ctx.ellipse(rFoot.x, rFoot.y, 1.7, 0.7, -swing * 0.2, 0, Math.PI * 2);
+  ctx.fill();
+  fillLimb(ctx, -3.8, -4.2, lElb.x, lElb.y, 1.85, 1.4, metal.dark, metal.edge);
+  fillLimb(ctx, lElb.x, lElb.y, lHand.x, lHand.y, 1.35, 1.0, metal.mid, metal.edge);
+  fillLimb(ctx, 3.8, -4.2, rElb.x, rElb.y, 1.85, 1.4, metal.dark, metal.edge);
+  fillLimb(ctx, rElb.x, rElb.y, rHand.x, rHand.y, 1.35, 1.0, metal.mid, metal.edge);
+  jointAt(ctx, -3.6, -4.2, 1.35, metal.lite, metal.edge);
+  jointAt(ctx, 3.6, -4.2, 1.35, metal.lite, metal.edge);
+  jointAt(ctx, lElb.x, lElb.y, 1.05, metal.lite, metal.edge);
+  jointAt(ctx, rElb.x, rElb.y, 1.05, metal.lite, metal.edge);
+  ctx.beginPath();
+  ctx.moveTo(-5.1, -6.5);
+  ctx.lineTo(5.1, -6.5);
+  ctx.lineTo(4.1, 4.4);
+  ctx.lineTo(-4.1, 4.4);
+  ctx.closePath();
+  ctx.fillStyle = metal.dark;
+  ctx.fill();
+  ctx.strokeStyle = metal.edge;
+  ctx.lineWidth = 0.6;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-1.5, -5.2);
+  ctx.lineTo(2.5, -5.2);
+  ctx.lineTo(1.9, 2.4);
+  ctx.lineTo(-0.9, 2.4);
+  ctx.closePath();
+  ctx.fillStyle = metal.mid;
+  ctx.fill();
+  ctx.fillStyle = metal.lite;
+  ctx.globalAlpha = 0.55;
+  ctx.fillRect(-0.4, -4.6, 1.5, 5.2);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = metal.dark;
+  ctx.fillRect(-3.3, 3.5, 6.6, 2.1);
+  ctx.strokeStyle = metal.edge;
+  ctx.strokeRect(-3.3, 3.5, 6.6, 2.1);
+  if (code) {
+    ctx.strokeStyle = "#ff8af0";
+    ctx.lineWidth = 0.95;
+    ctx.beginPath();
+    ctx.moveTo(-1.5, -1.4);
+    ctx.lineTo(-3.0, 0.15);
+    ctx.lineTo(-1.5, 1.7);
+    ctx.moveTo(1.5, -1.4);
+    ctx.lineTo(3.0, 0.15);
+    ctx.lineTo(1.5, 1.7);
+    ctx.stroke();
+  }
+  if (robot.hasFills) {
+    ctx.beginPath();
+    ctx.arc(4.5, 2.6, 1.25, 0, Math.PI * 2);
+    ctx.fillStyle = "#f0c14a";
+    ctx.fill();
+  }
+  ctx.beginPath();
+  ctx.ellipse(0, -9.5, 3.55, 3.7, 0, 0, Math.PI * 2);
+  ctx.fillStyle = metal.dark;
+  ctx.fill();
+  ctx.strokeStyle = metal.edge;
+  ctx.lineWidth = 0.6;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(-1.0, -10.5, 1.7, 1.15, -0.4, 0, Math.PI * 2);
+  ctx.fillStyle = metal.lite;
+  ctx.globalAlpha = 0.5;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = visor;
+  ctx.globalAlpha = 0.35;
+  ctx.fillRect(-3.3, -11.5, 6.6, 3.1);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = visor;
+  ctx.fillRect(-2.35, -10.85, 4.7, 1.7);
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.fillRect(-1.7, -10.55, 1.15, 0.7);
+  ctx.fillRect(0.55, -10.55, 1.15, 0.7);
   if (robot.leader) {
     const pulse = reduced ? 1 : 0.55 + 0.45 * Math.sin(now / 140 + hashPhase(robot.id));
     ctx.globalAlpha = pulse;
     ctx.fillStyle = "#f0c14a";
     ctx.beginPath();
-    ctx.moveTo(-3.2, -16.8);
-    ctx.lineTo(-1.8, -19.4);
-    ctx.lineTo(-0.4, -16.8);
-    ctx.moveTo(-0.6, -16.8);
-    ctx.lineTo(0, -20.2);
-    ctx.lineTo(0.6, -16.8);
-    ctx.moveTo(0.4, -16.8);
-    ctx.lineTo(1.8, -19.4);
-    ctx.lineTo(3.2, -16.8);
+    ctx.moveTo(-3.3, -12.6);
+    ctx.lineTo(-1.9, -15.2);
+    ctx.lineTo(-0.5, -12.6);
+    ctx.moveTo(-0.7, -12.6);
+    ctx.lineTo(0, -16);
+    ctx.lineTo(0.7, -12.6);
+    ctx.moveTo(0.5, -12.6);
+    ctx.lineTo(1.9, -15.2);
+    ctx.lineTo(3.3, -12.6);
     ctx.fill();
     ctx.globalAlpha = 1;
-  }
-  if (robot.codeStrategy) {
-    ctx.fillStyle = "rgba(28, 10, 36, 0.9)";
-    ctx.strokeStyle = "#e7a6ff";
-    ctx.lineWidth = 1;
+  } else {
     ctx.beginPath();
-    ctx.rect(-3.4, -1.8, 6.8, 4.6);
-    ctx.fill();
+    ctx.moveTo(0, -13.1);
+    ctx.lineTo(0, -15.1);
+    ctx.strokeStyle = metal.edge;
+    ctx.lineWidth = 0.8;
     ctx.stroke();
-    ctx.fillStyle = "#f3d4ff";
-    ctx.font = "6px ui-monospace, monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("</>", 0, 0.5);
-  }
-  if (robot.hasFills) {
     ctx.beginPath();
-    ctx.arc(5.6, 3.2, 1.7, 0, Math.PI * 2);
-    ctx.fillStyle = "#f0c14a";
+    ctx.arc(0, -15.5, 0.85, 0, Math.PI * 2);
+    ctx.fillStyle = visor;
     ctx.fill();
   }
   ctx.restore();
-  return { x: x, y: y + pose.bob, r: 12 * scale };
+  return { x: x, y: y + pose.bob, r: 11 * scale };
 }
 function edgeBetween(a, b) {
   const dx = b.x - a.x;
@@ -803,37 +1013,178 @@ function drawFloor(ctx, width, height, now, reduced) {
   }
   if (!reduced) {
     const scan = (now / 28) % height;
-    ctx.fillStyle = "rgba(150, 255, 240, 0.035)";
-    ctx.fillRect(0, scan, width, 10);
+    ctx.fillStyle = "rgba(150, 255, 240, 0.028)";
+    ctx.fillRect(0, scan, width, 8);
   }
+  const vig = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * 0.2, width / 2, height / 2, Math.max(width, height) * 0.72);
+  vig.addColorStop(0, "rgba(0, 0, 0, 0)");
+  vig.addColorStop(1, "rgba(0, 0, 0, 0.38)");
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, width, height);
 }
-function drawOrbShell(ctx, orb, mode) {
+function driftOrbs(now, reduced) {
+  const cx = sceneSize.width / 2;
+  const cy = (sceneSize.height - 22) / 2;
+  const sway = reduced ? 0 : Math.sin(now / 9000) * 0.04;
+  const c = Math.cos(sway);
+  const s = Math.sin(sway);
+  orbLayout.forEach(orb => {
+    const dx = orb.restX - cx;
+    const dy = orb.restY - cy;
+    const bobx = reduced ? 0 : Math.cos(now / 1000 * 0.17 + orb.phase) * 5;
+    const boby = reduced ? 0 : Math.sin(now / 1000 * 0.13 + orb.phase * 1.7) * 4;
+    orb.x = cx + dx * c - dy * s + bobx;
+    orb.y = cy + dx * s + dy * c + boby;
+  });
+}
+function spinPoint(x, y, ang) {
+  const c = Math.cos(ang);
+  const s = Math.sin(ang);
+  return { x: x * c - y * s, y: x * s + y * c };
+}
+function linkHot(link) {
+  if (!hoverOrbId) return false;
+  const a = orbLayout[link.a];
+  const b = orbLayout[link.b];
+  return (a && a.id === hoverOrbId) || (b && b.id === hoverOrbId);
+}
+function sameOrbPair(link, fromOrb, toOrb) {
+  if (!fromOrb || !toOrb) return false;
+  const a = orbLayout[link.a];
+  const b = orbLayout[link.b];
+  return (a === fromOrb && b === toOrb) || (a === toOrb && b === fromOrb);
+}
+function strokeAxon(ctx, edge, bend, hot) {
+  ctx.lineCap = "round";
+  ctx.strokeStyle = hot ? "rgba(186, 255, 244, 0.9)" : "rgba(92, 168, 176, 0.28)";
+  ctx.lineWidth = hot ? 1.7 : 1;
+  strokeCurve(ctx, edge.x1, edge.y1, edge.x2, edge.y2, bend);
+  ctx.strokeStyle = hot ? "rgba(120, 210, 230, 0.45)" : "rgba(70, 130, 145, 0.18)";
+  ctx.lineWidth = hot ? 1.1 : 0.7;
+  strokeCurve(ctx, edge.x1, edge.y1, edge.x2, edge.y2, bend * 0.42);
+  const branch = curvePoint(edge.x1, edge.y1, edge.x2, edge.y2, 0.42, bend);
+  const ahead = curvePoint(edge.x1, edge.y1, edge.x2, edge.y2, 0.58, bend);
+  const dx = ahead.x - branch.x;
+  const dy = ahead.y - branch.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const bx = branch.x + (-dy / len) * (hot ? 26 : 20);
+  const by = branch.y + (dx / len) * (hot ? 26 : 20);
+  ctx.strokeStyle = hot ? "rgba(186, 255, 244, 0.55)" : "rgba(92, 168, 176, 0.2)";
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(branch.x, branch.y);
+  ctx.quadraticCurveTo((branch.x + bx) / 2 + 3, (branch.y + by) / 2, bx, by);
+  ctx.stroke();
+}
+function drawIdlePacket(ctx, edge, bend, t) {
+  const point = curvePoint(edge.x1, edge.y1, edge.x2, edge.y2, t, bend);
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, 2.5, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(186, 204, 210, 0.8)";
+  ctx.lineWidth = 1.1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, 1.1, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(186, 204, 210, 0.45)";
+  ctx.fill();
+}
+function drawGlass(ctx, orb, mode, now, reduced, hovered) {
   const x = orb.x;
   const y = orb.y;
   const r = orb.r;
-  const glow = ctx.createRadialGradient(x - r * 0.28, y - r * 0.34, r * 0.08, x, y, r);
-  glow.addColorStop(0, "rgba(190, 255, 246, 0.18)");
-  glow.addColorStop(0.42, "rgba(14, 48, 58, 0.55)");
-  glow.addColorStop(1, "rgba(5, 12, 18, 0.12)");
+  const bloom = ctx.createRadialGradient(x, y, r * 0.2, x, y, r * 1.55);
+  bloom.addColorStop(0, hovered ? "rgba(120, 255, 236, 0.22)" : "rgba(80, 210, 200, 0.1)");
+  bloom.addColorStop(1, "rgba(80, 210, 200, 0)");
+  ctx.beginPath();
+  ctx.arc(x, y, r * 1.55, 0, Math.PI * 2);
+  ctx.fillStyle = bloom;
+  ctx.fill();
+  const spinH = reduced ? orb.phase : now * 0.00035 + orb.phase;
+  const hx = x + Math.cos(spinH) * r * 0.22 - r * 0.12;
+  const hy = y + Math.sin(spinH) * r * 0.14 - r * 0.2;
+  const body = ctx.createRadialGradient(hx, hy, r * 0.05, x, y, r);
+  body.addColorStop(0, "rgba(226, 255, 250, 0.28)");
+  body.addColorStop(0.28, "rgba(40, 120, 130, 0.16)");
+  body.addColorStop(0.72, "rgba(8, 22, 30, 0.72)");
+  body.addColorStop(1, "rgba(4, 10, 16, 0.2)");
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fillStyle = glow;
+  ctx.fillStyle = body;
   ctx.fill();
   ctx.beginPath();
-  ctx.arc(x, y, r + 4, 0, Math.PI * 2);
-  ctx.strokeStyle = mode === "receive" ? "rgba(240, 193, 74, 0.35)" : "rgba(80, 230, 220, 0.16)";
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.strokeStyle = mode === "receive" ? "rgba(240, 193, 74, 0.95)" : (mode === "send" ? "rgba(150, 220, 255, 0.95)" : (hovered ? "rgba(190, 255, 246, 0.95)" : "rgba(130, 230, 220, 0.72)"));
+  ctx.lineWidth = mode || hovered ? 2 : 1.25;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x, y + r * 0.08, r * 0.92, 0.15, Math.PI - 0.15);
+  ctx.strokeStyle = "rgba(0, 8, 14, 0.35)";
   ctx.lineWidth = 5;
   ctx.stroke();
+}
+function drawGlassFront(ctx, orb, now, reduced) {
+  const x = orb.x;
+  const y = orb.y;
+  const r = orb.r;
+  const spinH = reduced ? orb.phase : now * 0.00035 + orb.phase;
+  const hx = x + Math.cos(spinH) * r * 0.22 - r * 0.16;
+  const hy = y + Math.sin(spinH) * r * 0.12 - r * 0.28;
   ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.strokeStyle = mode === "receive" ? "rgba(240, 193, 74, 0.95)" : (mode === "send" ? "rgba(140, 220, 255, 0.95)" : "rgba(120, 245, 230, 0.78)");
-  ctx.lineWidth = mode ? 2 : 1.2;
-  ctx.stroke();
+  ctx.ellipse(hx, hy, r * 0.28, r * 0.16, spinH * 0.2, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.16)";
+  ctx.fill();
   ctx.beginPath();
-  ctx.arc(x, y, r - 3, -2.55, -0.5);
-  ctx.strokeStyle = "rgba(230, 255, 250, 0.4)";
-  ctx.lineWidth = 1.2;
+  ctx.arc(x, y, r - 2, -2.5, -0.55);
+  ctx.strokeStyle = "rgba(230, 255, 252, 0.45)";
+  ctx.lineWidth = 1.3;
   ctx.stroke();
+}
+function drawInner(ctx, orb, now, reduced) {
+  const spin = reduced ? orb.spin0 * 0.2 : orb.spin0 * 0.2 + now * 0.00012 * orb.spinDir;
+  const placed = orb.nodes.map(node => {
+    const p = spinPoint(node.x, node.y, spin);
+    return { x: orb.x + p.x, y: orb.y + p.y, node: node };
+  });
+  ctx.lineWidth = 0.7;
+  ctx.beginPath();
+  orb.innerLinks.forEach(link => {
+    if (link.leader) return;
+    ctx.moveTo(placed[link.a].x, placed[link.a].y);
+    ctx.lineTo(placed[link.b].x, placed[link.b].y);
+  });
+  ctx.strokeStyle = "rgba(140, 190, 190, 0.28)";
+  ctx.stroke();
+  ctx.lineWidth = 1.15;
+  ctx.beginPath();
+  orb.innerLinks.forEach(link => {
+    if (!link.leader) return;
+    ctx.moveTo(placed[link.a].x, placed[link.a].y);
+    ctx.lineTo(placed[link.b].x, placed[link.b].y);
+  });
+  ctx.strokeStyle = "rgba(240, 193, 74, 0.9)";
+  ctx.stroke();
+  ctx.fillStyle = "rgba(150, 186, 186, 0.7)";
+  ctx.beginPath();
+  placed.forEach(item => {
+    if (item.node.kind !== "dot") return;
+    ctx.moveTo(item.x + 1.35, item.y);
+    ctx.arc(item.x, item.y, 1.35, 0, Math.PI * 2);
+  });
+  ctx.fill();
+  const hub = placed[0];
+  ctx.beginPath();
+  ctx.arc(hub.x, hub.y, 2.3, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(210, 255, 246, 0.85)";
+  ctx.fill();
+  return placed;
+}
+function groupTip(orb) {
+  const group = orb.group;
+  const bits = [group.id === "missing" ? "Group missing" : "Group " + group.id];
+  bits.push("leader " + clusterLeaderLabel(group));
+  bits.push(group.robots.length + " named");
+  if (orb.unnamed) bits.push(orb.unnamed + " not named in this snapshot");
+  return bits.join(" · ");
 }
 function flightState(now) {
   if (!noteFlights.length || prefersReducedMotion()) return null;
@@ -870,79 +1221,103 @@ function drawFrame(now) {
     ctx.fillText("No groups in this snapshot.", 16, 36);
     return;
   }
+  driftOrbs(now, reduced);
   const byId = new Map(orbLayout.map(orb => [orb.id, orb]));
-  sceneLinks.forEach(pair => {
-    const a = orbLayout[pair[0]];
-    const b = orbLayout[pair[1]];
-    const edge = edgeBetween(a, b);
-    ctx.strokeStyle = "rgba(90, 210, 205, 0.28)";
-    ctx.lineWidth = 1.1;
-    strokeCurve(ctx, edge.x1, edge.y1, edge.x2, edge.y2, -12);
-    const mid = curvePoint(edge.x1, edge.y1, edge.x2, edge.y2, 0.5, -12);
-    ctx.beginPath();
-    ctx.arc(mid.x, mid.y, 2.1, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(140, 245, 235, 0.45)";
-    ctx.fill();
-  });
   const flight = flightState(now);
   let fromOrb = null;
   let toOrb = null;
   if (flight && flight.fromId != null) fromOrb = byId.get(String(flight.fromId)) || null;
   if (flight && flight.toId != null) toOrb = byId.get(String(flight.toId)) || null;
-  orbLayout.forEach(orb => {
+  const focus = hoverOrbId && byId.get(hoverOrbId) ? byId.get(hoverOrbId) : null;
+  const focusX = focus ? focus.x : width / 2;
+  const focusY = focus ? focus.y : height / 2;
+  sceneLinks.forEach(link => {
+    const hot = linkHot(link);
+    if (hot) return;
+    const edge = edgeBetween(orbLayout[link.a], orbLayout[link.b]);
+    strokeAxon(ctx, edge, link.bend, false);
+    if (!reduced && !sameOrbPair(link, fromOrb, toOrb)) {
+      const speed = 0.14;
+      drawIdlePacket(ctx, edge, link.bend, (now / 1000 * speed + link.phase) % 1);
+      drawIdlePacket(ctx, edge, link.bend * 0.42, (now / 1000 * speed + link.phase + 0.5) % 1);
+    }
+  });
+  sceneLinks.forEach(link => {
+    if (!linkHot(link)) return;
+    const edge = edgeBetween(orbLayout[link.a], orbLayout[link.b]);
+    ctx.strokeStyle = "rgba(140, 255, 236, 0.18)";
+    ctx.lineWidth = 5;
+    strokeCurve(ctx, edge.x1, edge.y1, edge.x2, edge.y2, link.bend);
+    strokeAxon(ctx, edge, link.bend, true);
+    if (!reduced && !sameOrbPair(link, fromOrb, toOrb)) {
+      drawIdlePacket(ctx, edge, link.bend, (now / 1000 * 0.14 + link.phase) % 1);
+    }
+  });
+  const ordered = orbLayout.slice().sort((a, b) => {
+    const da = (a.x - focusX) * (a.x - focusX) + (a.y - focusY) * (a.y - focusY);
+    const db = (b.x - focusX) * (b.x - focusX) + (b.y - focusY) * (b.y - focusY);
+    return db - da;
+  });
+  sceneHits = [];
+  ordered.forEach(orb => {
+    const dist = Math.hypot(orb.x - focusX, orb.y - focusY);
+    const fade = Math.min(1, dist / 460);
+    const alpha = orb.id === hoverOrbId ? 1 : 1 - fade * 0.22;
+    const scale = orb.id === hoverOrbId ? 1 : 1 - fade * 0.05;
     let mode = "";
     if (flight && fromOrb === orb && flight.flight.sourceKnown && flight.raw < 0.2) mode = "send";
     if (flight && toOrb === orb && flight.raw > 0.72) mode = "receive";
-    drawOrbShell(ctx, orb, mode);
-    const robots = orb.group.robots;
-    if (robots.length >= 2) {
-      ctx.strokeStyle = "rgba(130, 230, 220, 0.28)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      const steps = robots.length === 2 ? 1 : robots.length;
-      for (let i = 0; i < steps; i++) {
-        const a = robots[i];
-        const b = robots[(i + 1) % robots.length];
-        ctx.moveTo(orb.x + a.ax, orb.y + a.ay);
-        ctx.lineTo(orb.x + b.ax, orb.y + b.ay);
-      }
-      ctx.stroke();
-    }
-    ctx.fillStyle = "rgba(120, 160, 155, 0.45)";
-    orb.dots.forEach(dot => {
-      ctx.fillRect(orb.x + dot.x, orb.y + dot.y, 1.6, 1.6);
-    });
-  });
-  sceneHits = [];
-  orbLayout.forEach(orb => {
+    ctx.save();
+    ctx.translate(orb.x, orb.y);
+    ctx.scale(scale, scale);
+    ctx.translate(-orb.x, -orb.y);
+    ctx.globalAlpha = alpha;
+    drawGlass(ctx, orb, mode, now, reduced, orb.id === hoverOrbId);
+    ctx.beginPath();
+    ctx.arc(orb.x, orb.y, orb.r - 2, 0, Math.PI * 2);
+    ctx.clip();
+    const placed = drawInner(ctx, orb, now, reduced);
     orb.group.robots.forEach(robot => {
+      const item = placed.find(entry => entry.node.robot === robot);
       robot.crowd = orb.group.robots.length;
-      const hit = drawHumanoid(ctx, orb.x + (robot.ax || 0), orb.y + (robot.ay || 0), robot, now, reduced);
-      sceneHits.push({ x: hit.x, y: hit.y, r: 14, robot: robot });
+      const px = item ? item.x : orb.x;
+      const py = item ? item.y : orb.y;
+      const hit = drawHumanoid(ctx, px, py, robot, now, reduced);
+      sceneHits.push({
+        x: orb.x + (hit.x - orb.x) * scale,
+        y: orb.y + (hit.y - orb.y) * scale,
+        r: 12,
+        robot: robot,
+        orbId: orb.id,
+        orb: orb
+      });
     });
-    ctx.fillStyle = "#b8fff2";
-    ctx.font = "700 12px ui-sans-serif, system-ui, sans-serif";
+    ctx.restore();
+    ctx.save();
+    ctx.globalAlpha = Math.max(alpha, 0.88);
+    drawGlassFront(ctx, orb, now, reduced);
+    ctx.fillStyle = "#d9fff6";
+    ctx.font = "700 11px ui-sans-serif, system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-    ctx.fillText(orb.group.id === "missing" ? "MISSING" : "G" + orb.group.id, orb.x, orb.y - orb.r + 16);
-    ctx.fillStyle = "#8eb8ae";
-    ctx.font = "10px ui-monospace, monospace";
-    const leader = clusterLeaderLabel(orb.group);
-    const short = leader.length > 18 ? leader.slice(0, 17) + "…" : leader;
-    ctx.fillText(short, orb.x, orb.y + orb.r + 14);
+    ctx.textBaseline = "middle";
+    ctx.fillText(orb.group.id === "missing" ? "MISSING" : "G" + orb.group.id, orb.x, orb.y - orb.r + 14);
+    ctx.restore();
   });
   if (flight && fromOrb && toOrb && flight.flight.el) {
     const edge = edgeBetween(fromOrb, toOrb);
-    const bend = -30 * (flight.flight.arc || 1);
-    ctx.strokeStyle = "rgba(190, 255, 245, 0.85)";
-    ctx.lineWidth = 1.6;
+    const bend = -28 * (flight.flight.arc || 1);
+    ctx.strokeStyle = "rgba(255, 214, 120, 0.28)";
+    ctx.lineWidth = 6;
+    strokeCurve(ctx, edge.x1, edge.y1, edge.x2, edge.y2, bend);
+    ctx.strokeStyle = "rgba(255, 236, 190, 0.95)";
+    ctx.lineWidth = 1.8;
     strokeCurve(ctx, edge.x1, edge.y1, edge.x2, edge.y2, bend);
     for (let i = 5; i >= 0; i--) {
       const t = Math.max(0, flight.eased - i * 0.045);
       const point = curvePoint(edge.x1, edge.y1, edge.x2, edge.y2, t, bend);
       ctx.beginPath();
-      ctx.arc(point.x, point.y, i === 0 ? 4.2 : 2.2, 0, Math.PI * 2);
-      ctx.fillStyle = i === 0 ? "rgba(240, 255, 250, 0.95)" : "rgba(110, 245, 230, " + (0.45 - i * 0.06) + ")";
+      ctx.arc(point.x, point.y, i === 0 ? 4.4 : 2.3, 0, Math.PI * 2);
+      ctx.fillStyle = i === 0 ? "rgba(255, 248, 220, 0.98)" : "rgba(255, 196, 90, " + (0.55 - i * 0.07) + ")";
       ctx.fill();
     }
     const head = curvePoint(edge.x1, edge.y1, edge.x2, edge.y2, flight.eased, bend);
@@ -960,6 +1335,12 @@ function drawFrame(now) {
   } else if (noteFlights.length) {
     noteFlights.forEach(item => { if (item.el) item.el.style.opacity = "0"; });
   }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "rgba(168, 206, 200, 0.85)";
+  ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText("Faint rings on the links are decoration. A labeled pulse is a shared note from the gist.", 12, height - 8);
 }
 function ensureLoop() {
   if (sceneRunning || prefersReducedMotion()) return;
@@ -985,30 +1366,46 @@ function hitAt(event) {
     const hit = sceneHits[i];
     if ((hit.x - x) * (hit.x - x) + (hit.y - y) * (hit.y - y) <= hit.r * hit.r) return hit;
   }
-  return null;
+  let closest = null;
+  let best = Infinity;
+  orbLayout.forEach(orb => {
+    const dx = orb.x - x;
+    const dy = orb.y - y;
+    const d = dx * dx + dy * dy;
+    if (d <= orb.r * orb.r && d < best) {
+      best = d;
+      closest = { x: orb.x, y: orb.y, r: orb.r, robot: null, orbId: orb.id, orb: orb };
+    }
+  });
+  return closest;
 }
-function onArenaPointer(event) {
-  const tip = document.getElementById("hover-tip");
-  const hit = hitAt(event);
-  const canvas = document.getElementById("arena-canvas");
-  if (canvas) canvas.style.cursor = hit ? "pointer" : "default";
-  if (!tip) return;
-  if (!hit) {
-    tip.hidden = true;
-    return;
-  }
+function placeTip(tip, event, text) {
   tip.hidden = false;
-  tip.textContent = robotTitle(hit.robot);
+  tip.textContent = text;
   const stage = document.getElementById("arena-stage");
   const rect = stage.getBoundingClientRect();
   const localX = event.clientX - rect.left + 14;
   const localY = event.clientY - rect.top + 14;
-  tip.style.left = Math.min(localX, rect.width - 220) + "px";
-  tip.style.top = Math.min(localY, rect.height - 48) + "px";
+  tip.style.left = Math.min(localX, Math.max(8, rect.width - 240)) + "px";
+  tip.style.top = Math.min(localY, Math.max(8, rect.height - 48)) + "px";
+}
+function onArenaPointer(event) {
+  const tip = document.getElementById("hover-tip");
+  const prev = hoverOrbId;
+  const hit = hitAt(event);
+  hoverOrbId = hit ? hit.orbId : null;
+  const canvas = document.getElementById("arena-canvas");
+  if (canvas) canvas.style.cursor = hit && hit.robot ? "pointer" : "default";
+  if (tip) {
+    if (!hit) tip.hidden = true;
+    else placeTip(tip, event, hit.robot ? robotTitle(hit.robot) : groupTip(hit.orb));
+  }
+  if (prefersReducedMotion() && prev !== hoverOrbId) drawFrame(performance.now());
 }
 let pointerBound = false;
 let lastActiveNote = -1;
 let sceneLinks = [];
+let hoverOrbId = null;
 function bindArenaPointer() {
   if (pointerBound) return;
   const canvas = document.getElementById("arena-canvas");
@@ -1019,10 +1416,14 @@ function bindArenaPointer() {
     const tip = document.getElementById("hover-tip");
     if (tip) tip.hidden = true;
     canvas.style.cursor = "default";
+    if (hoverOrbId) {
+      hoverOrbId = null;
+      if (prefersReducedMotion()) drawFrame(performance.now());
+    }
   });
   canvas.addEventListener("click", event => {
     const hit = hitAt(event);
-    if (hit) openRobot(hit.robot);
+    if (hit && hit.robot) openRobot(hit.robot);
   });
 }
 
@@ -1154,7 +1555,7 @@ function renderArena(bundle) {
     groups: model.map(group => ({
       id: group.id,
       leaderId: group.leaderId,
-      robots: group.robots.map(robot => [robot.id, robot.leader, robot.leaderFlag, robot.origin, robot.inBoard, robot.hasFills, robot.isScore, robot.oosScore, robot.placeNote, robot.codeStrategy ? robot.codeStrategy.description : ""])
+      robots: group.robots.map(robot => [robot.id, robot.leader, robot.leaderFlag, robot.origin, robot.inBoard, robot.hasFills, robot.isScore, robot.oosScore, robot.placeNote, robot.codeStrategy ? robot.codeStrategy.description : "", robot.oosNet])
     })),
     notes: noteInfo.notes,
     where: noteInfo.where,
@@ -1256,8 +1657,14 @@ function render(bundle) {
     tr.className = "click";
     tr.dataset.id = agent.agent_id;
     const strategy = readCodeStrategy(agent);
-    if (strategy) tr.title = "AI-written code: " + strategy.description;
-    tr.innerHTML = `<td>${escapeHtml(agent.agent_id)}</td><td>${escapeHtml(group)}</td><td>${escapeHtml(leader)}</td><td>${escapeHtml(origin)}</td><td>${scoreText(agent.is_score)}</td><td>${scoreText(agent.oos_score)}</td><td>${num(ism.net_pnl, 2)}</td><td>${num(ism.fees, 2)}</td><td>${num(ism.spread_slippage, 2)}</td><td>${num(ism.latency_cost, 2)}</td><td>${ism.n_round_trips ?? "—"}</td><td>${num(ism.win_rate, 2)}</td><td>${num(ism.max_drawdown, 2)}</td><td>${escapeHtml(statusLabel(agent, ism))}</td>`;
+    const oosNet = readOosNet(agent);
+    if (strategy) {
+      let title = "AI-written code: " + strategy.description;
+      if (oosNet !== undefined) title += " · unseen net " + netText(oosNet);
+      tr.title = title;
+    }
+    const agentLabel = escapeHtml(agent.agent_id) + (strategy ? " · code" : "");
+    tr.innerHTML = `<td>${agentLabel}</td><td>${escapeHtml(group)}</td><td>${escapeHtml(leader)}</td><td>${escapeHtml(origin)}</td><td>${scoreText(agent.is_score)}</td><td>${scoreText(agent.oos_score)}</td><td>${num(ism.net_pnl, 2)}</td><td>${num(ism.fees, 2)}</td><td>${num(ism.spread_slippage, 2)}</td><td>${num(ism.latency_cost, 2)}</td><td>${ism.n_round_trips ?? "—"}</td><td>${num(ism.win_rate, 2)}</td><td>${num(ism.max_drawdown, 2)}</td><td>${escapeHtml(statusLabel(agent, ism))}</td>`;
     tr.onclick = () => showAgent(agent);
     body.appendChild(tr);
   });
