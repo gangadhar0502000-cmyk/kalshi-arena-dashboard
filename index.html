@@ -16,6 +16,9 @@
     <h1>Kalshi 15-minute paper arena</h1>
     <p class="sub" id="message">loading the public gist snapshot</p>
     <p class="sub" id="freshness">last updated —</p>
+    <div class="ticker" id="ticker">
+      <div class="ticker-track" id="ticker-track"><span>loading the gist feed</span></div>
+    </div>
   </header>
   <section class="grid" id="health"></section>
   <section class="panel arena-panel" id="groups">
@@ -24,11 +27,13 @@
     <p class="sub" id="arena-size"></p>
     <p class="sub" id="arena-notes"></p>
     <div class="arena-stage" id="arena-stage">
-      <div class="cluster-grid" id="cluster-grid"></div>
+      <canvas id="arena-canvas" width="800" height="480" aria-label="Groups drawn as glowing orbs. Named agents are robots. A crown is the leader."></canvas>
       <div class="note-layer" id="note-layer" aria-hidden="true"></div>
+      <div class="hover-tip" id="hover-tip" hidden></div>
     </div>
+    <ul class="sr-robots" id="sr-robots"></ul>
     <p class="sub" id="arena-fresh"></p>
-    <p class="sub">A crown marks that group's leader. An amber dot on a robot means that agent has simulated fills in this snapshot. Dim dots are agents in the group who are not named in this snapshot. Robots only bob in place. That motion is not a trade or a profit.</p>
+    <p class="sub">A crown marks that group's leader. An amber dot means that agent has simulated fills in this snapshot. Dim dots are agents not named in this snapshot. A code glyph appears only when the gist flags an AI-written strategy, and the description is on hover. Walking, gestures, and synapse pulses are decoration. They are not trades or profits.</p>
     <ul class="note-list" id="note-list"></ul>
   </section>
   <section class="two">
