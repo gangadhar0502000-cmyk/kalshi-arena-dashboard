@@ -73,7 +73,8 @@ canvas { width: 100%; max-width: 100%; min-width: 0; height: 220px; background: 
 pre { white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; color: var(--blue); margin: 8px 0 0; }
 .two { display: grid; gap: 12px; grid-template-columns: 1.2fr 0.8fr; }
 @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
-.scroll { overflow-x: auto; max-height: 420px; }
+.scroll { overflow: auto; max-width: 100%; min-width: 0; max-height: 420px; }
+.ticker { max-width: 100%; }
 
 .ticker {
   margin-top: 10px;
@@ -148,4 +149,63 @@ pre { white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; color: var(
 }
 @media (max-width: 900px) {
   .note-chip { width: 140px; }
+}
+
+.view-tabs { display: flex; gap: 8px; }
+.view-tabs button {
+  background: #0c1620;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  padding: 6px 12px;
+  font: 13px/1.2 ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.view-tabs button.on { color: #071018; background: var(--amber); border-color: var(--amber); }
+.station-panel { overflow: hidden; }
+.station-layout {
+  display: grid;
+  grid-template-columns: minmax(168px, 220px) minmax(0, 1fr) minmax(168px, 220px);
+  grid-template-areas: "left stage right" "rooms rooms rooms";
+  gap: 8px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.hud-left { grid-area: left; }
+.hud-right { grid-area: right; }
+.station-stage { grid-area: stage; position: relative; min-width: 0; }
+.station-rooms { grid-area: rooms; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.hud { display: grid; gap: 8px; align-content: start; }
+.hud-card, .room-card {
+  border: 1px solid rgba(110, 230, 214, 0.28);
+  background: rgba(6, 14, 22, 0.72);
+  padding: 6px 8px;
+  min-width: 0;
+}
+.hud-card .label, .room-card .label { font-size: 10px; }
+.hud-card .metric, .room-card .metric { font-size: 16px; }
+.hud-card p, .room-card p { margin: 2px 0 0; font: 11px/1.35 ui-monospace, monospace; color: var(--ink); word-break: break-word; }
+#station-canvas {
+  width: 100%;
+  height: auto;
+  background: #071018;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: block;
+}
+#unseen-chart { width: 100%; height: 46px; background: transparent; display: block; }
+.gate {
+  height: 6px;
+  background: #1a2834;
+  margin-top: 3px;
+}
+.gate > span { display: block; height: 100%; background: #c9842a; }
+@media (max-width: 900px) {
+  .station-layout {
+    grid-template-columns: 1fr;
+    grid-template-areas: "stage" "left" "right" "rooms";
+  }
+  .hud { grid-template-columns: 1fr 1fr; }
+  .station-rooms { grid-template-columns: 1fr; }
 }
