@@ -1208,7 +1208,8 @@ function flightState(now) {
 }
 function drawFrame(now) {
   const canvas = document.getElementById("arena-canvas");
-  if (!canvas || !sceneSize.width) return;
+  const groups = document.getElementById("groups");
+  if (!canvas || !sceneSize.width || (groups && groups.hidden)) return;
   const ctx = canvas.getContext("2d");
   const reduced = prefersReducedMotion();
   const width = sceneSize.width;
@@ -1690,6 +1691,7 @@ function render(bundle) {
     if (again) showAgent(again);
   }
   tickFreshness();
+  if (typeof renderStation === "function") renderStation(bundle);
 }
 function fitNum(value) {
   if (typeof value === "number" && Number.isFinite(value) && value <= -1000) return "—";
