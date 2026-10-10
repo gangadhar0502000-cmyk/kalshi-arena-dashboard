@@ -1765,7 +1765,7 @@ function renderBlindBet(check) {
         const kind = r.kind === "code" ? "code" : "evolved";
         return `<tr>
           <td>${i + 1}</td>
-          <td><div>${escapeHtml(r.name || r.agent_id || "—")}</div><div class="sub">${escapeHtml(kind)}${r.does ? " · " + escapeHtml(r.does) : ""}</div></td>
+          <td><div>${escapeHtml(r.name || r.agent_id || "—")}${(r.clones || 1) > 1 ? ` <span class="tag-warn">×${escapeHtml(r.clones)} clones</span>` : ""}</div><div class="sub">${escapeHtml(kind)}${r.does ? " · " + escapeHtml(r.does) : ""}</div></td>
           <td>${pct == null ? "—" : pct + "%"}</td>
           <td><div class="bb-bar"><div class="bb-fill" style="width:${wpct}%"></div></div><span class="sub">${escapeHtml(r.windows ?? 0)}/${escapeHtml(need)}</span></td>
           <td class="${cls(r.net)}">${usd(r.net)}</td>
@@ -1780,5 +1780,7 @@ function renderBlindBet(check) {
   const base = check.latest_baseline;
   const foot = base ? `Blind bet, window ${escapeHtml(base.window || "—")}: always-YES ${usd(base.always_yes_net)} (${escapeHtml(base.yes_trades ?? "—")} trades), always-NO ${usd(base.always_no_net)} (${escapeHtml(base.no_trades ?? "—")} trades). ` : "";
   const tags = check.tagged != null ? `${escapeHtml(check.directional_bet ?? "—")} of ${escapeHtml(check.tagged)} code strategies tagged one-sided. ` : "";
-  host.innerHTML = html + `<p class="sub bb-foot">${foot}${tags}Excess = unseen net minus the better of always-YES/always-NO on the same windows.</p>`;
+  const us = check.unseen_scoring;
+  const draws = us && us.draws ? `Each unseen window is the average of ${escapeHtml(us.draws)} seeded latency draws. ` : "";
+  host.innerHTML = html + `<p class="sub bb-foot">${foot}${tags}${draws}Excess = unseen net minus the same-side blind bet (YES contracts × always-YES per contract + NO contracts × always-NO per contract), same windows.</p>`;
 }
