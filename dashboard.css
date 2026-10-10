@@ -162,3 +162,7 @@ pre { white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; color: var(
 .bb-grad-head { display: flex; justify-content: space-between; gap: 8px; }
 .bb-bar { height: 10px; border: 2px solid var(--line); background: #050a0e; }
 .bb-fill { height: 100%; background: repeating-linear-gradient(90deg, var(--cyan) 0 6px, transparent 6px 8px); }
+
+.grad-table td { vertical-align: top; }
+.grad-table .bb-bar { width: 90px; }
+.bb-foot { font-size: 12px; opacity: 0.8; }

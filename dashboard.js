@@ -1736,33 +1736,47 @@ function renderBlindBet(check) {
   const host = document.getElementById("blindbet-body");
   if (!host) return;
   if (!check || typeof check !== "object") {
-    host.innerHTML = "<p class='sub'>No blind-bet data in this snapshot yet.</p>";
+    host.innerHTML = "<p class='sub'>No graduation data in this snapshot yet.</p>";
     return;
   }
-  const num = (v, d) => (typeof v === "number" && isFinite(v)) ? v.toFixed(d == null ? 2 : d) : "—";
-  const usd = v => (typeof v === "number" && isFinite(v)) ? (v < 0 ? "−$" : "+$") + Math.abs(v).toFixed(2) : "—";
-  const cls = v => (typeof v === "number" && v > 0) ? "pos" : ((typeof v === "number" && v < 0) ? "neg" : "");
+  const isNum = v => typeof v === "number" && isFinite(v);
+  const usd = v => isNum(v) ? (v < 0 ? "−$" : "+$") + Math.abs(v).toFixed(2) : "—";
+  const cls = v => isNum(v) && v > 0 ? "pos" : (isNum(v) && v < 0 ? "neg" : "");
+  const ok = b => b ? "<span class='tag-ok'>✓</span>" : "<span class='tag-bad'>✗</span>";
+  const rows = Array.isArray(check.graduation_board) ? check.graduation_board : [];
+  let html;
+  if (!rows.length) {
+    html = "<p class='sub'>none qualify yet</p>";
+  } else {
+    html = `<div class="scroll"><table class="grad-table"><thead><tr><th>#</th><th>Strategy</th><th>Overall</th><th>Windows</th><th>Unseen net</th><th>Excess vs blind bet</th><th>Trades</th><th>t-stat</th><th>Drawdown</th><th>Status</th></tr></thead><tbody>${
+      rows.map((r, i) => {
+        const need = r.windows_needed || 48;
+        const wpct = Math.max(0, Math.min(100, Math.round(100 * (r.windows || 0) / need)));
+        const pct = isNum(r.progress) ? Math.round(r.progress * 100) : null;
+        const t = r.t_stat;
+        const tNum = t === "inf" ? Infinity : (t === "-inf" ? -Infinity : t);
+        const tNeed = r.t_needed ?? 2;
+        const tradesNeed = r.trades_needed ?? 30;
+        const ddOk = isNum(r.max_drawdown) && isNum(r.drawdown_cap) ? r.max_drawdown <= r.drawdown_cap : null;
+        const status = String(r.status || "—");
+        const scls = status === "on track" ? "tag-ok" : (status.startsWith("blocked") ? "tag-bad" : "tag-warn");
+        const kind = r.kind === "code" ? "code" : "evolved";
+        return `<tr>
+          <td>${i + 1}</td>
+          <td><div>${escapeHtml(r.name || r.agent_id || "—")}</div><div class="sub">${escapeHtml(kind)}${r.does ? " · " + escapeHtml(r.does) : ""}</div></td>
+          <td>${pct == null ? "—" : pct + "%"}</td>
+          <td><div class="bb-bar"><div class="bb-fill" style="width:${wpct}%"></div></div><span class="sub">${escapeHtml(r.windows ?? 0)}/${escapeHtml(need)}</span></td>
+          <td class="${cls(r.net)}">${usd(r.net)}</td>
+          <td class="${cls(r.excess)}">${usd(r.excess)}${isNum(r.excess_windows) ? `<div class="sub">${r.excess_windows} win</div>` : ""}</td>
+          <td>${escapeHtml(r.trades ?? "—")}/${escapeHtml(tradesNeed)} ${ok((r.trades || 0) >= tradesNeed)}</td>
+          <td>${t == null ? "—" : escapeHtml(t)} / ${escapeHtml(tNeed)} ${tNum == null ? "" : ok(tNum >= tNeed)}</td>
+          <td>${isNum(r.max_drawdown) ? (r.max_drawdown * 100).toFixed(1) + "%" : "—"} ${ddOk == null ? "" : ok(ddOk)}</td>
+          <td><span class="${scls}">${escapeHtml(status)}</span></td></tr>`;
+      }).join("")
+    }</tbody></table></div>`;
+  }
   const base = check.latest_baseline;
-  const baseHtml = base ? `<div class="bb-tiles">
-      <div class="bb-tile"><div class="label">Window ${escapeHtml(base.window || "—")}</div><div class="metric">blind bets</div></div>
-      <div class="bb-tile"><div class="label">Always YES</div><div class="metric ${cls(base.always_yes_net)}">${usd(base.always_yes_net)}</div><p class="sub">${escapeHtml(base.yes_trades ?? "—")} trades</p></div>
-      <div class="bb-tile"><div class="label">Always NO</div><div class="metric ${cls(base.always_no_net)}">${usd(base.always_no_net)}</div><p class="sub">${escapeHtml(base.no_trades ?? "—")} trades</p></div>
-      <div class="bb-tile"><div class="label">One-sided tagged</div><div class="metric">${escapeHtml(check.directional_bet ?? "—")} / ${escapeHtml(check.tagged ?? "—")}</div><p class="sub">${escapeHtml(check.spreadable ?? 0)} allowed to spread · ${escapeHtml(check.baseline_windows ?? "—")} baseline windows</p></div>
-    </div>` : "<p class='sub'>No settled baseline window yet.</p>";
-  const top = Array.isArray(check.top_by_excess) ? check.top_by_excess : [];
-  const topHtml = top.length ? `<div class="scroll"><table><thead><tr><th>Strategy</th><th>Excess vs best blind bet</th><th>Windows</th><th>Status</th><th>What the code does</th></tr></thead><tbody>${
-    top.map(r => `<tr><td>${escapeHtml(r.name || "—")}</td><td class="${cls(r.excess)}">${usd(r.excess)}</td><td>${escapeHtml(r.windows ?? "—")}</td><td>${r.directional ? "<span class='tag-bad'>one-sided · blocked</span>" : (typeof r.excess === "number" && r.excess > 0 ? "<span class='tag-ok'>may spread</span>" : "<span class='tag-warn'>blocked (excess ≤ 0)</span>")}</td><td class="sub">${escapeHtml(r.does || "")}</td></tr>`).join("")
-  }</tbody></table></div>` : "<p class='sub'>none qualify yet</p>";
-  const grad = Array.isArray(check.graduation_progress) ? check.graduation_progress : [];
-  const gradHtml = grad.length ? grad.map(r => {
-    const need = r.windows_needed || 48;
-    const pct = Math.max(0, Math.min(100, Math.round(100 * (r.windows || 0) / need)));
-    return `<div class="bb-grad"><div class="bb-grad-head"><span>${escapeHtml(r.name || "—")}</span><span class="${cls(r.excess)}">${usd(r.excess)} excess</span></div>
-      <div class="bb-bar"><div class="bb-fill" style="width:${pct}%"></div></div>
-      <p class="sub">${escapeHtml(r.windows ?? 0)} / ${escapeHtml(need)} windows · ${escapeHtml(r.does || "")}</p></div>`;
-  }).join("") : "<p class='sub'>none qualify yet</p>";
-  host.innerHTML = baseHtml +
-    "<h3>Top strategies by excess</h3>" + topHtml +
-    "<h3>Graduation progress (not one-sided)</h3>" + gradHtml +
-    `<p class="sub">${escapeHtml(check.excess_rule || "")}. Tag rule: ${escapeHtml(check.rule || "")}.</p>`;
+  const foot = base ? `Blind bet, window ${escapeHtml(base.window || "—")}: always-YES ${usd(base.always_yes_net)} (${escapeHtml(base.yes_trades ?? "—")} trades), always-NO ${usd(base.always_no_net)} (${escapeHtml(base.no_trades ?? "—")} trades). ` : "";
+  const tags = check.tagged != null ? `${escapeHtml(check.directional_bet ?? "—")} of ${escapeHtml(check.tagged)} code strategies tagged one-sided. ` : "";
+  host.innerHTML = html + `<p class="sub bb-foot">${foot}${tags}Excess = unseen net minus the better of always-YES/always-NO on the same windows.</p>`;
 }
