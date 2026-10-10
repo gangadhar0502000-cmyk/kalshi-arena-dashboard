@@ -20,25 +20,8 @@
       <div class="ticker-track" id="ticker-track"><span>loading the gist feed</span></div>
     </div>
   </header>
-  <div class="view-tabs" role="tablist">
-    <button type="button" id="tab-station" class="on" role="tab" aria-selected="true">Station</button>
-    <button type="button" id="tab-network" role="tab" aria-selected="false">Network</button>
-  </div>
-  <section class="panel station-panel" id="station">
-    <h2>Station</h2>
-    <div class="station-layout">
-      <div class="hud hud-left" id="station-hud-left"></div>
-      <div class="station-stage" id="station-stage">
-        <canvas id="station-canvas" width="940" height="540" aria-label="Pixel-art station. The command bridge is the LLM review. Rooms are groups. Crew are agents named in this snapshot."></canvas>
-        <div class="hover-tip" id="station-tip" hidden></div>
-      </div>
-      <div class="hud hud-right" id="station-hud-right"></div>
-      <div class="station-rooms" id="station-rooms"></div>
-    </div>
-    <p class="sub" id="station-legend"></p>
-  </section>
   <section class="grid" id="health"></section>
-  <section class="panel arena-panel" id="groups" hidden>
+  <section class="panel arena-panel" id="groups">
     <h2>Groups</h2>
     <p class="sub" id="arena-readout">Loading groups from the gist.</p>
     <p class="sub" id="arena-size"></p>
@@ -108,6 +91,5 @@
 </main>
 <script src="config.js"></script>
 <script src="dashboard.js"></script>
-<script src="station.js"></script>
 </body>
 </html>
