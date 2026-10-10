@@ -1627,6 +1627,7 @@ function render(bundle) {
     card("Paper", "yes")
   ].join("") + (health.last_error ? `<p class="sub">Last error: ${escapeHtml(health.last_error)}</p>` : "");
   renderMarkets(health.markets || []);
+  try { renderBlindBet(health.directional_check); } catch (err) { console.error(err); }
   drawChart(generations);
   const last = generations.length ? generations[generations.length - 1] : null;
   const spread = last && last.summary && last.summary.eligible_spread;
@@ -1730,3 +1731,38 @@ async function refresh() {
 refresh().catch(reportRefreshError);
 setInterval(() => refresh().catch(reportRefreshError), cfg.refreshMs || 30000);
 setInterval(tickFreshness, 1000);
+
+function renderBlindBet(check) {
+  const host = document.getElementById("blindbet-body");
+  if (!host) return;
+  if (!check || typeof check !== "object") {
+    host.innerHTML = "<p class='sub'>No blind-bet data in this snapshot yet.</p>";
+    return;
+  }
+  const num = (v, d) => (typeof v === "number" && isFinite(v)) ? v.toFixed(d == null ? 2 : d) : "—";
+  const usd = v => (typeof v === "number" && isFinite(v)) ? (v < 0 ? "−$" : "+$") + Math.abs(v).toFixed(2) : "—";
+  const cls = v => (typeof v === "number" && v > 0) ? "pos" : ((typeof v === "number" && v < 0) ? "neg" : "");
+  const base = check.latest_baseline;
+  const baseHtml = base ? `<div class="bb-tiles">
+      <div class="bb-tile"><div class="label">Window ${escapeHtml(base.window || "—")}</div><div class="metric">blind bets</div></div>
+      <div class="bb-tile"><div class="label">Always YES</div><div class="metric ${cls(base.always_yes_net)}">${usd(base.always_yes_net)}</div><p class="sub">${escapeHtml(base.yes_trades ?? "—")} trades</p></div>
+      <div class="bb-tile"><div class="label">Always NO</div><div class="metric ${cls(base.always_no_net)}">${usd(base.always_no_net)}</div><p class="sub">${escapeHtml(base.no_trades ?? "—")} trades</p></div>
+      <div class="bb-tile"><div class="label">One-sided tagged</div><div class="metric">${escapeHtml(check.directional_bet ?? "—")} / ${escapeHtml(check.tagged ?? "—")}</div><p class="sub">${escapeHtml(check.spreadable ?? 0)} allowed to spread · ${escapeHtml(check.baseline_windows ?? "—")} baseline windows</p></div>
+    </div>` : "<p class='sub'>No settled baseline window yet.</p>";
+  const top = Array.isArray(check.top_by_excess) ? check.top_by_excess : [];
+  const topHtml = top.length ? `<div class="scroll"><table><thead><tr><th>Strategy</th><th>Excess vs best blind bet</th><th>Windows</th><th>Status</th><th>What the code does</th></tr></thead><tbody>${
+    top.map(r => `<tr><td>${escapeHtml(r.name || "—")}</td><td class="${cls(r.excess)}">${usd(r.excess)}</td><td>${escapeHtml(r.windows ?? "—")}</td><td>${r.directional ? "<span class='tag-bad'>one-sided · blocked</span>" : (typeof r.excess === "number" && r.excess > 0 ? "<span class='tag-ok'>may spread</span>" : "<span class='tag-warn'>blocked (excess ≤ 0)</span>")}</td><td class="sub">${escapeHtml(r.does || "")}</td></tr>`).join("")
+  }</tbody></table></div>` : "<p class='sub'>none qualify yet</p>";
+  const grad = Array.isArray(check.graduation_progress) ? check.graduation_progress : [];
+  const gradHtml = grad.length ? grad.map(r => {
+    const need = r.windows_needed || 48;
+    const pct = Math.max(0, Math.min(100, Math.round(100 * (r.windows || 0) / need)));
+    return `<div class="bb-grad"><div class="bb-grad-head"><span>${escapeHtml(r.name || "—")}</span><span class="${cls(r.excess)}">${usd(r.excess)} excess</span></div>
+      <div class="bb-bar"><div class="bb-fill" style="width:${pct}%"></div></div>
+      <p class="sub">${escapeHtml(r.windows ?? 0)} / ${escapeHtml(need)} windows · ${escapeHtml(r.does || "")}</p></div>`;
+  }).join("") : "<p class='sub'>none qualify yet</p>";
+  host.innerHTML = baseHtml +
+    "<h3>Top strategies by excess</h3>" + topHtml +
+    "<h3>Graduation progress (not one-sided)</h3>" + gradHtml +
+    `<p class="sub">${escapeHtml(check.excess_rule || "")}. Tag rule: ${escapeHtml(check.rule || "")}.</p>`;
+}

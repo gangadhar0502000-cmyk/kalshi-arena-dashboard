@@ -149,3 +149,16 @@ pre { white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; color: var(
 @media (max-width: 900px) {
   .note-chip { width: 140px; }
 }
+
+.blindbet-panel h3 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--cyan); margin: 14px 0 6px; }
+.bb-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.bb-tile { border: 2px solid var(--line); background: rgba(126, 246, 228, 0.04); padding: 8px 10px; image-rendering: pixelated; box-shadow: 3px 3px 0 rgba(0,0,0,0.5); }
+.blindbet-panel .pos { color: var(--green); }
+.blindbet-panel .neg { color: var(--red); }
+.tag-bad { color: var(--red); font-weight: 700; }
+.tag-warn { color: var(--amber); }
+.tag-ok { color: var(--green); font-weight: 700; }
+.bb-grad { margin: 8px 0; }
+.bb-grad-head { display: flex; justify-content: space-between; gap: 8px; }
+.bb-bar { height: 10px; border: 2px solid var(--line); background: #050a0e; }
+.bb-fill { height: 100%; background: repeating-linear-gradient(90deg, var(--cyan) 0 6px, transparent 6px 8px); }
